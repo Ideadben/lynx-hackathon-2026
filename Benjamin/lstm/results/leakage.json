@@ -1,0 +1,14 @@
+{
+  "shorter_history": {
+    "same_missing": true,
+    "max_diff_relative_to_typical_position": 0.0
+  },
+  "altered_future": {
+    "same_missing": true,
+    "max_diff_relative_to_typical_position": 0.0
+  },
+  "altered_future_after_cut": {
+    "same_missing": true,
+    "max_diff_relative_to_typical_position": 31.968602587688167
+  }
+}

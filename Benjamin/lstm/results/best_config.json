@@ -1,0 +1,13 @@
+{
+  "loss": "mse",
+  "seq_len": 126,
+  "hidden": 64,
+  "layers": 2,
+  "dropout": 0.3524650329062379,
+  "lr": 0.0005906966927493421,
+  "weight_decay": 0.00028189873735603755,
+  "epochs": 11,
+  "batch_size": 64,
+  "turnover_mult": 1.0,
+  "halflife": 2
+}
