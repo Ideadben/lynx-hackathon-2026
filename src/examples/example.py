@@ -1,4 +1,4 @@
-"""A tour of the backtester. Run it from the repo root with: uv run python example.py"""
+"""A tour of the backtester. Run it with: uv run python src/examples/example.py"""
 
 from functools import partial
 from pathlib import Path
@@ -9,9 +9,9 @@ from backtest import Backtest
 from backtest.pipeline import instruments, risk_scale, to_positions
 from strategies import trend
 
-ROOT = Path(__file__).resolve().parent
-PRICES = ROOT / "prices" / "example_prices.csv"
-OUTPUT = ROOT / "example_output"
+HERE = Path(__file__).resolve().parent
+PRICES = HERE.parents[1] / "prices" / "example_prices.csv"
+OUTPUT = HERE / "output"
 
 
 def reversal(prices: pl.DataFrame, days: int = 5) -> pl.DataFrame:
@@ -53,6 +53,10 @@ def main() -> None:
 
     # Try a range of parameters, to see if the result is stable.
     print(bt.sweep(single_speed, span=[8, 16, 32]))
+
+    # Test choosing the span from the past, as live trading would have to.
+    walk = bt.walk_forward(single_speed, span=[8, 12, 16, 20, 32])
+    print(walk)
 
     # Put strategies side by side, and see how correlated they are.
     print(bt.compare({"trend": trend.forecast, "reversal": reversal}))

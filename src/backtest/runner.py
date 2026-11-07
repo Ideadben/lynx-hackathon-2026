@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import Literal, cast
 
+import numpy as np
 import polars as pl
 from matplotlib.figure import Figure
 
@@ -25,6 +26,10 @@ from backtest.pipeline import (
 from backtest.scoring import LYNX_COSTS, PDF_DELTA, Scoring, ScoringKind
 
 DEV_FRACTION = 0.75  # Same split as Benjamin's LSTM work.
+# Walk-forward blocks are fractions of the data, so they adapt to any length of history.
+FIRST_TRAIN_FRACTION = 0.3
+WALK_FORWARD_BLOCKS = 12
+MIN_TRAIN_DAYS = 126  # A parameter can't be judged on less than about half a year.
 KEY_FIGURES = [
     "adjusted_sharpe",
     "sharpe",
@@ -133,6 +138,24 @@ class Comparison:
     def __str__(self) -> str:
         with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_hide_dataframe_shape=True):
             return f"{self.figures}\n\nCorrelation of returns\n{self.correlations}"
+
+
+@dataclass(frozen=True)
+class WalkForward:
+    """The outcome of ``Backtest.walk_forward``.
+
+    ``result`` scores the stitched positions, so every traded day used a parameter chosen from
+    earlier data. ``choices`` has one row per block. ``fixed`` scores each parameter held
+    constant over the same traded days, so its best row is what hindsight would have picked.
+    """
+
+    result: Result
+    choices: pl.DataFrame
+    fixed: pl.DataFrame
+
+    def __str__(self) -> str:
+        with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_hide_dataframe_shape=True):
+            return f"{self.result}\n\nChoices\n{self.choices}\n\nFixed\n{self.fixed}"
 
 
 class Backtest:
@@ -326,6 +349,112 @@ class Backtest:
             rows.append(parameters | result.figures)
         return pl.DataFrame(rows)
 
+    def walk_forward(
+        self,
+        forecast: Strategy,
+        /,
+        *,
+        period: Period = "dev",
+        first_train: float = FIRST_TRAIN_FRACTION,
+        blocks: int = WALK_FORWARD_BLOCKS,
+        check_leakage: bool = True,
+        **grid: Iterable[object],
+    ) -> WalkForward:
+        """Tests choosing parameters from the past, as live trading would have to.
+
+        Before each block, picks the parameters with the best Adjusted Sharpe on all earlier
+        days, then trades them through that block. Blocks are fractions of the rows in
+        ``period``, not calendar years, so this works on any length of history.
+
+        Args:
+            forecast: A forecast function that takes the parameters as keyword arguments.
+            period: ``"dev"`` or ``"full"``. ``"holdout"`` alone has no history to train on.
+            first_train: The fraction of the period used only for training, at the start.
+            blocks: The number of blocks the rest of the period is split into.
+            check_leakage: As in ``run``, for each parameter combination.
+            **grid: The values to try per parameter, like ``span=[8, 16, 32]``.
+
+        Returns:
+            ``result`` for the stitched positions, ``choices`` per block, and ``fixed`` for each
+            parameter held constant over the same days.
+
+        Raises:
+            ValueError: If the arguments are invalid, or no parameter has enough history.
+        """
+        if period not in ("dev", "full"):
+            raise ValueError("walk_forward needs period 'dev' or 'full'.")
+        if not grid:
+            raise ValueError("Give at least one parameter, like span=[8, 16, 32].")
+        if not 0 < first_train < 1:
+            raise ValueError("first_train must be between 0 and 1.")
+
+        rows = _in_period(self.prices, self.prices, period).height
+        edges = np.linspace(int(rows * first_train), rows, blocks + 1).astype(int)
+        if blocks < 1 or (np.diff(edges) < 1).any():
+            raise ValueError(f"Can't split {rows} days into {blocks} blocks.")
+
+        combos = [
+            dict(zip(grid, values, strict=True))
+            for values in itertools.product(*grid.values())
+        ]
+        positions = [
+            self.run(
+                partial(forecast, **combo), period="full", check_leakage=check_leakage
+            ).positions
+            for combo in combos
+        ]
+
+        pieces = [_blank(positions[0]).head(int(edges[0]))]
+        choices = []
+        for start, end in zip(edges[:-1].tolist(), edges[1:].tolist(), strict=True):
+            scores = [self._train_score(frame, start) for frame in positions]
+            best = int(np.argmax(scores))
+            if not np.isfinite(scores[best]):
+                raise ValueError(
+                    f"Not enough history before row {start}: each parameter needs "
+                    f"{MIN_TRAIN_DAYS} days after warm-up. Use a larger first_train."
+                )
+            pieces.append(positions[best].slice(start, end - start))
+            choices.append(
+                {
+                    "first_day": self.prices[DATE][start],
+                    "last_day": self.prices[DATE][end - 1],
+                    **combos[best],
+                    "train_adjusted_sharpe": scores[best],
+                }
+            )
+        pieces.append(_blank(positions[0]).slice(rows))
+
+        name = f"walk_forward {_name(forecast)}"
+        stitched = pl.concat(pieces)
+        result = self.run_positions(
+            stitched, period=period, check_leakage=False, name=name
+        )
+        fixed = [
+            combo
+            | self.run_positions(
+                _only_rows(frame, int(edges[0]), rows),
+                period=period,
+                check_leakage=False,
+            ).figures
+            for combo, frame in zip(combos, positions, strict=True)
+        ]
+        return WalkForward(result, pl.DataFrame(choices), pl.DataFrame(fixed))
+
+    def _train_score(self, positions: pl.DataFrame, start: int) -> float:
+        """Adjusted Sharpe from returns known before ``start``. -inf with too little history."""
+        # A position earns its return two days later, so the last ones have no known return yet.
+        known = positions.head(start - POSITION_LAG)
+        columns = instruments(positions)
+        active = known.filter(pl.any_horizontal(pl.col(columns).is_not_null())).height
+        if active < MIN_TRAIN_DAYS:
+            return float("-inf")
+        names = ["adjusted_sharpe"]
+        score = float(
+            cast(float, self.scoring.figures(known, self.prices, names)[names[0]])
+        )
+        return score if np.isfinite(score) else float("-inf")
+
 
 def dev_end(prices: pl.DataFrame) -> date:
     """The date of the last development position. Its return is earned two days later."""
@@ -358,4 +487,23 @@ def _correlations(results: dict[str, Result]) -> pl.DataFrame:
     assert joined is not None
     return (
         joined.drop(DATE).corr().insert_column(0, pl.Series("strategy", list(results)))
+    )
+
+
+def _blank(positions: pl.DataFrame) -> pl.DataFrame:
+    """The same frame without any positions."""
+    return positions.with_columns(
+        pl.lit(None, dtype=pl.Float64).alias(column)
+        for column in instruments(positions)
+    )
+
+
+def _only_rows(positions: pl.DataFrame, start: int, end: int) -> pl.DataFrame:
+    """The same frame with positions kept only in rows ``start`` up to, not including, ``end``."""
+    return pl.concat(
+        [
+            _blank(positions).head(start),
+            positions.slice(start, end - start),
+            _blank(positions).slice(end),
+        ]
     )

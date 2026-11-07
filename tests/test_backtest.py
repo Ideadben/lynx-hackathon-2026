@@ -535,7 +535,7 @@ def test_unknown_scoring_is_rejected():
 def messy_prices(start_row=1500, rows=3000):
     """Eight assets of made-up prices: one starts late, one has gaps, one starts in the holdout."""
     rng = np.random.default_rng(1)
-    dates = pl.date_range(pl.date(2000, 1, 3), pl.date(2030, 1, 1), "1d", eager=True)
+    dates = pl.date_range(pl.date(2000, 1, 3), pl.date(2060, 1, 1), "1d", eager=True)
     dates = dates.filter(dates.dt.weekday() <= 5).head(rows).alias(DATE)
     walks = 1000 + rng.normal(0, 5, (rows, 8)).cumsum(axis=0)
     data = {f"asset{i}": walks[:, i].copy() for i in range(8)}
@@ -587,3 +587,138 @@ def test_trend_with_one_span_matches_the_single_moving_average(prices):
     ours = trend.forecast(prices, spans=(16,)).select(columns).to_numpy()
     theirs = ewma_sign(prices).select(columns).to_numpy()
     np.testing.assert_array_equal(ours, theirs)
+
+
+def single_speed(prices, span):
+    return trend.forecast(prices, spans=(span,))
+
+
+def regime_prices(rows=2000):
+    """One asset that rises through the first 40% of its history, then falls."""
+    turn = int(rows * 0.4)
+    rng = np.random.default_rng(3)
+    drift = np.where(np.arange(rows) < turn, 0.3, -0.3)
+    dates = pl.date_range(pl.date(2000, 1, 3), pl.date(2040, 1, 1), eager=True)
+    return pl.DataFrame(
+        {DATE: dates.head(rows), "a": 2000 + (drift + rng.normal(0, 1, rows)).cumsum()}
+    )
+
+
+def constant_bet(prices, direction):
+    return prices.with_columns(a=pl.lit(float(direction)))
+
+
+def test_walk_forward_cannot_see_a_regime_change_coming():
+    bt = Backtest(regime_prices())
+    walk = bt.walk_forward(constant_bet, period="full", direction=[1, -1])
+    picks = walk.choices["direction"].to_list()
+
+    assert picks[0] == 1
+    assert picks[-1] == -1
+    assert picks == sorted(picks, reverse=True)
+    # Hindsight's best constant bet beats a choice that has to learn about the change.
+    assert walk.result.adjusted_sharpe < walk.fixed["adjusted_sharpe"].max()
+
+
+def test_walk_forward_stitches_the_chosen_positions(prices):
+    bt = Backtest(prices)
+    walk = bt.walk_forward(single_speed, span=[8, 32], blocks=4)
+    assert walk.choices.height == 4
+
+    for row in walk.choices.iter_rows(named=True):
+        chosen = bt.run(partial(single_speed, span=row["span"])).positions
+        window = pl.col(DATE).is_between(row["first_day"], row["last_day"])
+        np.testing.assert_allclose(
+            walk.result.positions.filter(window).drop(DATE).to_numpy(),
+            chosen.filter(window).drop(DATE).to_numpy(),
+        )
+
+    before = walk.result.positions.filter(pl.col(DATE) < walk.choices["first_day"][0])
+    assert before.drop(DATE).null_count().sum_horizontal().item() == before.height * 5
+
+
+def test_walk_forward_only_uses_the_past(prices):
+    walk = Backtest(prices).walk_forward(single_speed, span=[8, 16, 32], blocks=6)
+    cut = walk.choices["first_day"][3]
+    future = pl.col(DATE) >= cut
+    columns = instruments(prices)
+    rng = np.random.default_rng(4)
+    noise = (rng.normal(0, 50, (prices.height, len(columns)))).cumsum(axis=0)
+    changed = prices.with_columns(
+        pl.when(future)
+        .then(pl.col(c) + pl.Series(noise[:, i]))
+        .otherwise(pl.col(c))
+        .alias(c)
+        for i, c in enumerate(columns)
+    )
+    other = Backtest(changed).walk_forward(single_speed, span=[8, 16, 32], blocks=6)
+
+    assert walk.choices.head(4).equals(other.choices.head(4))
+    earlier = pl.col(DATE) < cut
+    assert walk.result.positions.filter(earlier).equals(
+        other.result.positions.filter(earlier)
+    )
+
+
+def test_walk_forward_stays_inside_the_period(prices):
+    bt = Backtest(prices)
+    walk = bt.walk_forward(single_speed, span=[8, 16])
+    assert walk.choices["last_day"].max() == dev_end(prices)
+    assert walk.result.period == "dev"
+    assert walk.result.returns[DATE].max() <= dev_end(prices)
+    full = bt.walk_forward(single_speed, period="full", span=[8, 16])
+    assert full.choices["last_day"].max() == prices[DATE].max()
+
+
+def test_walk_forward_fixed_table_covers_the_same_days(prices):
+    bt = Backtest(prices)
+    walk = bt.walk_forward(single_speed, span=[16], blocks=4)
+    assert walk.fixed["sharpe"][0] == pytest.approx(walk.result.sharpe)
+
+
+def test_walk_forward_catches_leaks(prices):
+    def leaky(prices, span):
+        return ewma_gap(prices, span).with_columns(
+            pl.col(instruments(prices)).shift(-1)
+        )
+
+    with pytest.raises(LeakageError):
+        Backtest(prices).walk_forward(leaky, span=[16])
+
+
+@pytest.mark.parametrize(
+    "options, message",
+    [
+        ({"period": "holdout"}, "period"),
+        ({"first_train": 1.5}, "first_train"),
+        ({"blocks": 0}, "blocks"),
+        ({"blocks": 100000}, "blocks"),
+    ],
+)
+def test_walk_forward_rejects_bad_arguments(prices, options, message):
+    with pytest.raises(ValueError, match=message):
+        Backtest(prices).walk_forward(single_speed, span=[8], **options)
+
+
+def test_walk_forward_needs_parameters(prices):
+    with pytest.raises(ValueError, match="at least one parameter"):
+        Backtest(prices).walk_forward(single_speed)
+
+
+@pytest.mark.parametrize("rows", [1500, 3000, 6000, 9000])
+@pytest.mark.parametrize("years_later", [0, 17])
+def test_walk_forward_adapts_to_any_length_and_start_date(rows, years_later):
+    frame = messy_prices(start_row=rows // 2, rows=rows).with_columns(
+        pl.col(DATE).dt.offset_by(f"{years_later}y")
+    )
+    walk = Backtest(frame).walk_forward(single_speed, span=[8, 16])
+    block_days = walk.choices.height
+    assert block_days == 12
+    assert walk.choices["first_day"].is_sorted()
+    assert np.isfinite(walk.result.sharpe)
+
+
+def test_walk_forward_explains_when_history_is_too_short():
+    frame = messy_prices(start_row=100, rows=500)
+    with pytest.raises(ValueError, match="Not enough history"):
+        Backtest(frame).walk_forward(single_speed, span=[8, 16])

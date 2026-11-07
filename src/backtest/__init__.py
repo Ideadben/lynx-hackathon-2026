@@ -8,6 +8,6 @@ print(result.sharpe, result.adjusted_sharpe)
 result.plot()
 """
 
-from backtest.runner import Backtest, Comparison, Result
+from backtest.runner import Backtest, Comparison, Result, WalkForward
 
-__all__ = ["Backtest", "Comparison", "Result"]
+__all__ = ["Backtest", "Comparison", "Result", "WalkForward"]

@@ -1,35 +1,7 @@
 # How the backtester behaves
 
-`docs.md` lists the types and functions. This file explains how they behave. A working script is in `example.py`
-at the repo root.
-
-## Reading `docs.md`
-
-The code is Python, and the signatures use OCaml notation. They are documentation, not checked types.
-
-| Notation | Python |
-| --- | --- |
-| `val f : a -> b -> c` | `f(a, b)` returns `c` |
-| `?x:int` | Optional keyword argument, `f(x=3)` |
-| `t -> ...` as the first argument | A method, so `f t x` is `t.f(x)` |
-| `Dev`, `Pdf` | Strings: `"dev"`, `"pdf"` |
-| `None` / `Some x` | `None` / `x` |
-| `Leakage_error` | `LeakageError`, from `backtest.leakage` |
-
-## Defaults
-
-| Argument | Default |
-| --- | --- |
-| `scoring` | `"pdf"` |
-| `delta` | `0.0002` |
-| `costs` | `-0.02` |
-| `vol_window`, `risk_window` | `100` |
-| `cap` | `20.0` |
-| `normalize` | `True` |
-| `period` | `"dev"` |
-| `check_leakage` | `True` |
-| `name` | The function's name, or `"positions"` for a frame |
-| `spans` (trend) | `(8, 16, 32)` |
+`docs.md` lists the types and functions. This file explains how they behave. Working scripts are in
+`src/examples/`.
 
 ## Writing a forecast
 
@@ -161,6 +133,52 @@ function must take the parameters as keyword arguments, and they can't be called
 Use it to see whether a result is stable, not to pick the best row. If neighbouring values score well, the effect
 is probably real. If one value stands out, it may be luck, and the more values you try, the more luck flatters the
 top score.
+
+## `walk_forward`
+
+`sweep` shows how each parameter did with hindsight. `walk_forward` tests the process of choosing one:
+
+```python
+walk = bt.walk_forward(single_speed, span=[8, 16, 32])
+print(walk)
+```
+
+1. The first `first_train` of the period is only used for training.
+2. The rest is split into `blocks` equal blocks.
+3. Before each block, it picks the parameters with the best Adjusted Sharpe on all earlier days. It only uses
+   returns already known at that point.
+4. It trades those parameters through the block, and the blocks are stitched together into `result`.
+
+`result` is the honest number, because every traded day used a parameter chosen from earlier data. The best row
+of `fixed` is what hindsight would have picked over the same days, so the gap between them shows how much the
+choice was flattered. `choices` shows what was picked: if it jumps around, the choice is mostly noise.
+
+- **Costs:** switching parameters at a block boundary is a real trade, so it is charged.
+- **Slow to adapt:** training uses all earlier days, so old years keep counting and a change in the market takes a
+  long time to show up in the choice.
+- **Holdout:** the default `period="dev"` leaves the holdout untouched. `"full"` includes it, so it counts as a look
+  at the holdout. `"holdout"` alone is rejected, because it has no history to train on.
+- **Grid:** picking the grid after looking at results brings hindsight back. Use a wide grid.
+- **Time:** it runs the forecast once per combination, plus the leakage test for each one.
+
+## Different data
+
+Nothing depends on calendar years or a particular start date:
+
+- `dev` and `holdout` are fractions of the rows.
+- `walk_forward` blocks are fractions of the rows. On 23 years of data the blocks are about a year, and on 6 years
+  they are about 3 months.
+- Windows such as `vol_window` count trading days, so gaps in the calendar don't matter.
+- Any number of assets works, and assets can start late.
+
+Two things do not adapt by themselves:
+
+- **Too little history:** `walk_forward` needs 126 days after warm-up to judge a parameter, and raises `ValueError`
+  otherwise. A larger `first_train` helps. Dates inside `by_year` can also show partial years.
+- **Parameters:** values tuned on the example data, like the spans in `trend.py`, may not suit other data. Rerun
+  `sweep` and `walk_forward` on the real data.
+
+The 252 days per year assumes daily data, as the PDF describes.
 
 ## Leakage test
 
