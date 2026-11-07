@@ -14,7 +14,7 @@ In VS Code, open a notebook and select the `.venv` kernel.
 
 ## Positions format
 
-`evaluation.py` takes Polars frames in wide format: an `AsOfDate` column plus one column per
+`src/backtest/evaluation.py` takes Polars frames in wide format: an `AsOfDate` column plus one column per
 instrument.
 
 ```
