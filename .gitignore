@@ -185,5 +185,8 @@ CLAUDE.md
 uv.lock
 .vscode
 
-# My notes
-dirs/
+# Output of example.py
+example_output/
+
+# Personal todo lists
+todos/
