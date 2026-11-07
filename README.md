@@ -12,6 +12,32 @@ uv add scikit-learn    # add a package
 
 In VS Code, open a notebook and select the `.venv` kernel.
 
+## Testing a strategy
+
+Write a function that takes prices and returns a forecast: `AsOfDate` plus one column per instrument,
+one row per price date. The sign is the direction, the size is the conviction. Row T may only use data
+up to and including T.
+
+```python
+from backtest import Backtest
+
+def my_forecast(prices):
+    ...
+
+bt = Backtest("prices/example_prices.csv")  # A csv path, or a polars or pandas frame.
+result = bt.run(my_forecast)                # Scores the dev period by default.
+
+print(result)                               # All key figures.
+result.sharpe, result.adjusted_sharpe       # Or one at a time.
+result.plot()                               # The dashboard.
+```
+
+Create one `Backtest` per data source, and run as many strategies on it as you like. Non-price series
+go in as `Backtest(prices, extras)`, and the strategy is then called as `forecast(prices, extras)`.
+
+`Backtest` handles volatility scaling, capping and portfolio risk scaling, and raises `LeakageError` if
+the strategy uses future data. Use `period="holdout"` sparingly. Run the tests with `uv run pytest`.
+
 ## Positions format
 
 `src/backtest/evaluation.py` takes Polars frames in wide format: an `AsOfDate` column plus one column per
