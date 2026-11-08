@@ -8,6 +8,24 @@ print(result.sharpe, result.adjusted_sharpe)
 result.plot()
 """
 
-from backtest.runner import Backtest, Comparison, Result, WalkForward
+from backtest.runner import Backtest, Comparison, Result, WalkForward, grid
+from backtest.stats import (
+    Bootstrap,
+    adjusted_sharpe,
+    bootstrap,
+    paired_bootstrap,
+    sharpe,
+)
 
-__all__ = ["Backtest", "Comparison", "Result", "WalkForward"]
+__all__ = [
+    "Backtest",
+    "Bootstrap",
+    "Comparison",
+    "Result",
+    "WalkForward",
+    "adjusted_sharpe",
+    "bootstrap",
+    "grid",
+    "paired_bootstrap",
+    "sharpe",
+]

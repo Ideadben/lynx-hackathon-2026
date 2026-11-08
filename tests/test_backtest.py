@@ -6,7 +6,22 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from backtest import Backtest
+from backtest import (
+    Backtest,
+    adjusted_sharpe,
+    bootstrap,
+    grid,
+    paired_bootstrap,
+    sharpe,
+)
+from backtest.choose import (
+    best_single,
+    drop_small,
+    equal_weights,
+    max_sharpe,
+    random_search,
+    stateless,
+)
 from backtest.evaluation import DATE, calc_key_figures
 from backtest.leakage import LeakageError, check_no_leakage
 from backtest.pipeline import (
@@ -608,37 +623,73 @@ def constant_bet(prices, direction):
     return prices.with_columns(a=pl.lit(float(direction)))
 
 
+def picked(walk):
+    """The rule with the largest weight in each block."""
+    weights = walk.choices.drop("first_day", "last_day")
+    return [max(row, key=row.get) for row in weights.iter_rows(named=True)]
+
+
+SPANS = grid(single_speed, span=[8, 16, 32])
+
+
+def test_grid_names_and_builds_rules(prices):
+    rules = grid(single_speed, span=[8, 16])
+    assert list(rules) == ["span=8", "span=16"]
+    two = grid(constant_bet, direction=[1, -1])
+    assert two["direction=-1"](prices)["a"][0] == -1.0
+    assert list(grid(ewma_gap, span=[8], other=[1])) == ["span=8, other=1"]
+    with pytest.raises(ValueError, match="at least one parameter"):
+        grid(single_speed)
+
+
 def test_walk_forward_cannot_see_a_regime_change_coming():
     bt = Backtest(regime_prices())
-    walk = bt.walk_forward(constant_bet, period="full", direction=[1, -1])
-    picks = walk.choices["direction"].to_list()
+    walk = bt.walk_forward(grid(constant_bet, direction=[1, -1]), period="full")
+    picks = picked(walk)
 
-    assert picks[0] == 1
-    assert picks[-1] == -1
-    assert picks == sorted(picks, reverse=True)
-    # Hindsight's best constant bet beats a choice that has to learn about the change.
+    assert picks[0] == "direction=1"
+    assert picks[-1] == "direction=-1"
+    assert picks.index("direction=-1") > 0
+    assert "direction=1" not in picks[picks.index("direction=-1") :]
     assert walk.result.adjusted_sharpe < walk.fixed["adjusted_sharpe"].max()
 
 
-def test_walk_forward_stitches_the_chosen_positions(prices):
+def test_walk_forward_stitches_the_weighted_positions(prices):
     bt = Backtest(prices)
-    walk = bt.walk_forward(single_speed, span=[8, 32], blocks=4)
-    assert walk.choices.height == 4
+    walk = bt.walk_forward(SPANS, choose=equal_weights(), blocks=4)
+    columns = instruments(prices)
+    each = [
+        bt.run(rule).positions.select(columns).to_numpy() for rule in SPANS.values()
+    ]
+    average = np.mean(each, axis=0)
 
+    first = walk.choices["first_day"][0]
+    last = walk.choices["last_day"][-1]
+    window = pl.col(DATE).is_between(first, last)
+    rows = prices.with_row_index().filter(window)["index"].to_numpy()
+    stitched = walk.result.positions.filter(window).select(columns).to_numpy()
+    np.testing.assert_allclose(stitched, average[rows])
+
+    before = walk.result.positions.filter(pl.col(DATE) < first)
+    assert before.drop(DATE).null_count().sum_horizontal().item() == before.height * 5
+
+
+def test_walk_forward_best_single_uses_one_rule_per_block(prices):
+    bt = Backtest(prices)
+    walk = bt.walk_forward(SPANS, blocks=4)
     for row in walk.choices.iter_rows(named=True):
-        chosen = bt.run(partial(single_speed, span=row["span"])).positions
+        weights = [row[name] for name in SPANS]
+        assert sorted(weights) == [0.0, 0.0, 1.0]
+        chosen = bt.run(SPANS[max(SPANS, key=row.get)]).positions
         window = pl.col(DATE).is_between(row["first_day"], row["last_day"])
         np.testing.assert_allclose(
             walk.result.positions.filter(window).drop(DATE).to_numpy(),
             chosen.filter(window).drop(DATE).to_numpy(),
         )
 
-    before = walk.result.positions.filter(pl.col(DATE) < walk.choices["first_day"][0])
-    assert before.drop(DATE).null_count().sum_horizontal().item() == before.height * 5
-
 
 def test_walk_forward_only_uses_the_past(prices):
-    walk = Backtest(prices).walk_forward(single_speed, span=[8, 16, 32], blocks=6)
+    walk = Backtest(prices).walk_forward(SPANS, choose=max_sharpe(), blocks=6)
     cut = walk.choices["first_day"][3]
     future = pl.col(DATE) >= cut
     columns = instruments(prices)
@@ -651,7 +702,7 @@ def test_walk_forward_only_uses_the_past(prices):
         .alias(c)
         for i, c in enumerate(columns)
     )
-    other = Backtest(changed).walk_forward(single_speed, span=[8, 16, 32], blocks=6)
+    other = Backtest(changed).walk_forward(SPANS, choose=max_sharpe(), blocks=6)
 
     assert walk.choices.head(4).equals(other.choices.head(4))
     earlier = pl.col(DATE) < cut
@@ -660,30 +711,57 @@ def test_walk_forward_only_uses_the_past(prices):
     )
 
 
+def test_walk_forward_passes_training_returns_and_threads_state(prices):
+    seen = []
+
+    def recording(train, state):
+        seen.append((train, state))
+        return {name: 1 / train.width for name in train.columns}, (state or 0) + 1
+
+    bt = Backtest(prices)
+    walk = bt.walk_forward(SPANS, choose=recording, blocks=3)
+    assert [state for _, state in seen] == [None, 1, 2]
+
+    for (train, _), first_day in zip(seen, walk.choices["first_day"], strict=True):
+        assert train.columns == list(SPANS)
+        assert train.null_count().sum_horizontal().item() == 0
+        alone = bt.run(SPANS["span=16"], period="full").returns
+        known = alone.filter(pl.col(DATE) < first_day)
+        assert train.height <= known.height
+        assert train["span=16"].tail(5).to_list() == known["returns"].tail(5).to_list()
+    assert seen[1][0].height > seen[0][0].height
+
+
+def test_walk_forward_rejects_bad_weights(prices):
+    bt = Backtest(prices)
+    with pytest.raises(ValueError, match="unknown rules"):
+        bt.walk_forward(SPANS, choose=stateless(lambda train: {"nope": 1.0}))
+    with pytest.raises(ValueError, match="finite"):
+        bt.walk_forward(SPANS, choose=stateless(lambda train: {"span=8": np.nan}))
+
+
 def test_walk_forward_stays_inside_the_period(prices):
     bt = Backtest(prices)
-    walk = bt.walk_forward(single_speed, span=[8, 16])
+    walk = bt.walk_forward(SPANS)
     assert walk.choices["last_day"].max() == dev_end(prices)
     assert walk.result.period == "dev"
     assert walk.result.returns[DATE].max() <= dev_end(prices)
-    full = bt.walk_forward(single_speed, period="full", span=[8, 16])
+    full = bt.walk_forward(SPANS, period="full")
     assert full.choices["last_day"].max() == prices[DATE].max()
 
 
 def test_walk_forward_fixed_table_covers_the_same_days(prices):
-    bt = Backtest(prices)
-    walk = bt.walk_forward(single_speed, span=[16], blocks=4)
+    walk = Backtest(prices).walk_forward(grid(single_speed, span=[16]), blocks=4)
+    assert walk.fixed["rule"].to_list() == ["span=16"]
     assert walk.fixed["sharpe"][0] == pytest.approx(walk.result.sharpe)
 
 
 def test_walk_forward_catches_leaks(prices):
-    def leaky(prices, span):
-        return ewma_gap(prices, span).with_columns(
-            pl.col(instruments(prices)).shift(-1)
-        )
+    def leaky(prices):
+        return ewma_gap(prices).with_columns(pl.col(instruments(prices)).shift(-1))
 
     with pytest.raises(LeakageError):
-        Backtest(prices).walk_forward(leaky, span=[16])
+        Backtest(prices).walk_forward({"leaky": leaky})
 
 
 @pytest.mark.parametrize(
@@ -697,12 +775,12 @@ def test_walk_forward_catches_leaks(prices):
 )
 def test_walk_forward_rejects_bad_arguments(prices, options, message):
     with pytest.raises(ValueError, match=message):
-        Backtest(prices).walk_forward(single_speed, span=[8], **options)
+        Backtest(prices).walk_forward(SPANS, **options)
 
 
-def test_walk_forward_needs_parameters(prices):
-    with pytest.raises(ValueError, match="at least one parameter"):
-        Backtest(prices).walk_forward(single_speed)
+def test_walk_forward_needs_rules(prices):
+    with pytest.raises(ValueError, match="at least one rule"):
+        Backtest(prices).walk_forward({})
 
 
 @pytest.mark.parametrize("rows", [1500, 3000, 6000, 9000])
@@ -711,14 +789,130 @@ def test_walk_forward_adapts_to_any_length_and_start_date(rows, years_later):
     frame = messy_prices(start_row=rows // 2, rows=rows).with_columns(
         pl.col(DATE).dt.offset_by(f"{years_later}y")
     )
-    walk = Backtest(frame).walk_forward(single_speed, span=[8, 16])
-    block_days = walk.choices.height
-    assert block_days == 12
+    rules = grid(single_speed, span=[8, 16])
+    walk = Backtest(frame).walk_forward(
+        rules, choose=random_search(candidates=50, keep=5)
+    )
+    assert walk.choices.height == 12
     assert walk.choices["first_day"].is_sorted()
     assert np.isfinite(walk.result.sharpe)
 
 
 def test_walk_forward_explains_when_history_is_too_short():
     frame = messy_prices(start_row=100, rows=500)
-    with pytest.raises(ValueError, match="Not enough history"):
-        Backtest(frame).walk_forward(single_speed, span=[8, 16])
+    with pytest.raises(ValueError, match="training days"):
+        Backtest(frame).walk_forward(grid(single_speed, span=[8, 16]))
+
+
+def training_frame(rows=600, seed=5):
+    rng = np.random.default_rng(seed)
+    good = rng.normal(0.1, 1, rows)
+    return pl.DataFrame(
+        {
+            "good": good,
+            "bad": rng.normal(-0.1, 1, rows),
+            "noise": rng.normal(0, 1, rows),
+        }
+    )
+
+
+def test_best_single_and_equal_weights():
+    train = training_frame()
+    weights, state = best_single()(train, None)
+    assert weights == {"good": 1.0, "bad": 0.0, "noise": 0.0}
+    assert state is None
+    weights, _ = equal_weights()(train, None)
+    assert weights == pytest.approx({"good": 1 / 3, "bad": 1 / 3, "noise": 1 / 3})
+
+
+def test_max_sharpe_beats_equal_weights_in_training():
+    train = training_frame()
+    returns = train.to_numpy()
+    for long_only in (True, False):
+        weights, _ = max_sharpe(long_only)(train, None)
+        w = np.array([weights[c] for c in train.columns])
+        assert np.abs(w).sum() == pytest.approx(1.0)
+        if long_only:
+            assert (w >= 0).all()
+        assert sharpe(returns @ w) >= sharpe(returns.mean(axis=1)) - 1e-9
+        assert weights["good"] > weights["bad"]
+
+
+def test_random_search_keeps_a_shortlist_and_repeats_with_the_seed():
+    train = training_frame()
+    choose = random_search(candidates=200, keep=20, seed=7)
+    first, state = choose(train, None)
+    shortlist, _ = state
+    assert shortlist.shape == (20, 3)
+    assert sum(first.values()) == pytest.approx(1.0)
+    assert min(first.values()) >= 0
+    assert first["good"] > first["bad"]
+
+    _, state = choose(train, state)
+    assert state[0].shape == (20, 3)
+    again, _ = random_search(candidates=200, keep=20, seed=7)(train, None)
+    assert again == first
+
+
+def test_drop_small_removes_tiny_weights_and_keeps_the_total():
+    fixed = stateless(lambda train: {"good": 0.6, "bad": 0.37, "noise": 0.03})
+    weights, _ = drop_small(fixed, below=0.05)(training_frame(), None)
+    assert weights["noise"] == 0.0
+    assert sum(weights.values()) == pytest.approx(1.0)
+    assert weights["good"] / weights["bad"] == pytest.approx(0.6 / 0.37)
+    everything = stateless(lambda train: {"good": 0.01, "bad": 0.01, "noise": 0.01})
+    unchanged, _ = drop_small(everything, below=0.05)(training_frame(), None)
+    assert unchanged == {"good": 0.01, "bad": 0.01, "noise": 0.01}
+
+
+def test_sharpe_functions_match_the_backtest(prices):
+    result = Backtest(prices).run(ewma_gap)
+    returns = result.returns
+    assert sharpe(returns) == pytest.approx(result.sharpe)
+    assert adjusted_sharpe(returns) == pytest.approx(result.adjusted_sharpe)
+    assert adjusted_sharpe(returns, 260) != pytest.approx(result.adjusted_sharpe)
+
+
+def test_sharpe_functions_score_columns_at_once():
+    matrix = training_frame().to_numpy()
+    together = adjusted_sharpe(matrix)
+    apart = [adjusted_sharpe(column) for column in matrix.T]
+    np.testing.assert_allclose(together, apart)
+    assert np.isnan(sharpe(np.array([1.0])))
+    assert np.isnan(adjusted_sharpe(np.zeros(50)))
+    with pytest.raises(ValueError, match="NaN"):
+        sharpe(np.array([[1.0, np.nan], [2.0, 3.0]]))
+
+
+def test_bootstrap_interval_contains_the_estimate(prices):
+    returns = Backtest(prices).run(ewma_gap).returns
+    result = bootstrap(returns, samples=500)
+    assert result.estimate == pytest.approx(adjusted_sharpe(returns))
+    assert result.low < result.estimate < result.high
+    assert 0 <= result.p_at_most_zero < 0.5
+    assert result.block >= 1
+    assert result.draws.shape == (500,)
+    assert "95% interval" in str(result)
+    assert bootstrap(returns, samples=500, seed=1).low != result.low
+    assert bootstrap(returns, sharpe, samples=200, block=20).block == 20
+
+
+def test_bootstrap_finds_no_edge_in_noise():
+    noise = np.random.default_rng(8).normal(0, 1, 3000)
+    result = bootstrap(noise, samples=1000)
+    assert result.low < 0 < result.high
+
+
+def test_paired_bootstrap_matches_on_dates_and_compares(prices):
+    bt = Backtest(prices)
+    a, b = bt.run(ewma_sign).returns, bt.run(trend.forecast).returns
+    same = paired_bootstrap(a, a, samples=200)
+    assert same.estimate == 0 and same.low == 0 and same.high == 0
+
+    result = paired_bootstrap(a, b, samples=500)
+    joined = a.join(b, on=DATE, suffix="_b")
+    expected = adjusted_sharpe(joined["returns"]) - adjusted_sharpe(joined["returns_b"])
+    assert result.estimate == pytest.approx(expected)
+    assert result.low < result.estimate < result.high
+    with pytest.raises(ValueError, match="same length"):
+        paired_bootstrap(np.zeros(10), np.zeros(11))

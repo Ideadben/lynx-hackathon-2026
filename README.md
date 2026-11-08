@@ -36,8 +36,8 @@ Create one `Backtest` per data source, and run as many strategies on it as you l
 go in as `Backtest(prices, extras)`, and the strategy is then called as `forecast(prices, extras)`.
 
 A full tour is in `src/examples/example.py`, and `src/examples/walk_forward_example.py` shows how to
-test parameter choices. Run them with `uv run python src/examples/example.py`. The reference is
-`src/backtest/docs.md`, and `src/backtest/explanation.md` explains how it behaves.
+test parameter choices. Run them with `uv run python src/examples/example.py`. The reference is in
+`src/backtest/docs/`, one page per module, and `src/backtest/docs/explanation.md` explains how it behaves.
 
 `Backtest` handles volatility scaling, capping and portfolio risk scaling, and raises `LeakageError` if
 the strategy uses future data. Use `period="holdout"` sparingly. Run the tests with `uv run pytest`.

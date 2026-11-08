@@ -1,6 +1,6 @@
 # How the backtester behaves
 
-`docs.md` lists the types and functions. This file explains how they behave. Working scripts are in
+The module pages, listed in `README.md` in this folder, give the types and functions. This file explains how they behave. Working scripts are in
 `src/examples/`.
 
 ## Writing a forecast
@@ -136,44 +136,93 @@ top score.
 
 ## `walk_forward`
 
-`sweep` shows how each parameter did with hindsight. `walk_forward` tests the process of choosing one:
+`sweep` shows how each rule did with hindsight. `walk_forward` tests the process of choosing between rules:
 
 ```python
-walk = bt.walk_forward(single_speed, span=[8, 16, 32])
+rules = grid(single_speed, span=[4, 8, 16, 32, 64])
+walk = bt.walk_forward(rules, choose=max_sharpe())
 print(walk)
 ```
 
-1. The first `first_train` of the period is only used for training.
-2. The rest is split into `blocks` equal blocks.
-3. Before each block, it picks the parameters with the best Adjusted Sharpe on all earlier days. It only uses
-   returns already known at that point.
-4. It trades those parameters through the block, and the blocks are stitched together into `result`.
+1. Each rule runs once on all dates, through the full pipeline.
+2. The first `first_train` of the period is only used for training. The rest is split into `blocks` equal blocks.
+3. Before each block, `choose` gets each rule's daily net returns on earlier days, and returns a weight per rule.
+   It only gets returns already known at that point, on days where every rule has a return.
+4. The block trades the weighted sum of the rules' positions. The blocks are stitched together into `result`.
 
-`result` is the honest number, because every traded day used a parameter chosen from earlier data. The best row
-of `fixed` is what hindsight would have picked over the same days, so the gap between them shows how much the
-choice was flattered. `choices` shows what was picked: if it jumps around, the choice is mostly noise.
+`result` is the honest number, because every traded day used weights chosen from earlier data. The best row of
+`fixed` is what hindsight would have picked over the same days. `choices` shows the weights: if they jump around,
+the choice is mostly noise.
 
-- **Costs:** switching parameters at a block boundary is a real trade, so it is charged.
-- **Slow to adapt:** training uses all earlier days, so old years keep counting and a change in the market takes a
-  long time to show up in the choice.
-- **Holdout:** the default `period="dev"` leaves the holdout untouched. `"full"` includes it, so it counts as a look
-  at the holdout. `"holdout"` alone is rejected, because it has no history to train on.
-- **Grid:** picking the grid after looking at results brings hindsight back. Use a wide grid.
-- **Time:** it runs the forecast once per combination, plus the leakage test for each one.
+- **Costs:** changing weights at a block boundary is a real trade, so it is charged.
+- **No rescaling:** the weighted sum isn't scaled back up to a risk of 1. Mixing rules lowers risk, which doesn't
+  change Sharpe ratios.
+- **Slow to adapt:** training uses all earlier days, so old years keep counting.
+- **Holdout:** the default `period="dev"` leaves the holdout untouched. `"full"` includes it, so it counts as a look.
+- **Rules:** choosing the rules after looking at results brings hindsight back. Use a wide range.
+
+### Choosing functions
+
+A choosing function is `choose(train, state) -> (weights, state)`. `train` has one column per rule. `state` is
+`None` before the first block, and whatever the function returned after that, which lets a choice build on earlier
+ones. Weights for missing rules are 0.
+
+| Function | What it does |
+| --- | --- |
+| `best_single()` | All weight on the best rule in training. The default. |
+| `equal_weights()` | The same weight on every rule. Learns nothing, which makes it the baseline to beat. |
+| `max_sharpe()` | The weights with the best training Sharpe. Long-only by default. |
+| `random_search()` | Random weights, refined from block to block. See below. |
+| `drop_small(c)` | Wraps another function, and sets small weights to 0. |
+| `stateless(f)` | Turns `train -> weights` into a choosing function. |
+
+`random_search` follows this recipe before each block:
+
+1. Draws `candidates` new random long-only weightings, and adds the `keep` kept from the last block.
+2. Splits the training days: the last `validation` share is for validation.
+3. Keeps the `keep` weightings with the best `objective` on the first part, for the next block.
+4. Of those, picks the one with the best `objective` on the validation part.
+
+The same `seed` gives the same result. Candidates are scored on the weighted sum of the rules' returns, which ignores
+how trades net out between rules. Under PDF costs that difference is tiny.
+
+An objective scores returns, like `adjusted_sharpe`. Objectives that accept a 2D array and score each column are
+fast. Others are called once per column.
+
+## Bootstrap
+
+A Sharpe ratio from one history is uncertain. `bootstrap` resamples the daily returns many times and shows the range
+of the statistic:
+
+```python
+print(bootstrap(result.returns))
+print(paired_bootstrap(walk.result.returns, baseline.result.returns))
+```
+
+- It uses a stationary bootstrap from the `arch` package: blocks of random length, so runs of related days stay
+  together. The average block length is estimated from the returns, unless `block` is given. It depends on how
+  related the daily returns are, not on how long positions are held.
+- `p_at_most_zero` is the share of resampled values at or below 0. For `paired_bootstrap`, it's how often the first
+  strategy didn't beat the second.
+- Use `paired_bootstrap` to compare strategies. Two separate intervals overlapping says little, because the
+  strategies share the same days.
+- Run it on out-of-sample returns, such as `walk.result.returns`. On in-sample returns it shows the uncertainty of a
+  number that is already flattered.
+- The default statistic is `adjusted_sharpe`. Any function from an array to a number works.
 
 ## Different data
 
 Nothing depends on calendar years or a particular start date:
 
 - `dev` and `holdout` are fractions of the rows.
-- `walk_forward` blocks are fractions of the rows. On 23 years of data the blocks are about a year, and on 6 years
+- `walk_forward` blocks are fractions of the rows, and the rules don't need to share warm-up lengths. On 23 years of data the blocks are about a year, and on 6 years
   they are about 3 months.
 - Windows such as `vol_window` count trading days, so gaps in the calendar don't matter.
 - Any number of assets works, and assets can start late.
 
 Two things do not adapt by themselves:
 
-- **Too little history:** `walk_forward` needs 126 days after warm-up to judge a parameter, and raises `ValueError`
+- **Too little history:** `walk_forward` needs 126 training days where every rule has a return, and raises `ValueError`
   otherwise. A larger `first_train` helps. Dates inside `by_year` can also show partial years.
 - **Parameters:** values tuned on the example data, like the spans in `trend.py`, may not suit other data. Rerun
   `sweep` and `walk_forward` on the real data.

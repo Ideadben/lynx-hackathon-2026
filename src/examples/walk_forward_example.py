@@ -1,15 +1,21 @@
-"""Tests choosing a parameter from past data only.
+"""Tests choosing between rules using only past data.
 
 Run it with: uv run python src/examples/walk_forward_example.py
 """
 
-from datetime import date
 from pathlib import Path
 
 import polars as pl
 
-from backtest import Backtest
-from backtest.pipeline import instruments
+from backtest import Backtest, bootstrap, grid, paired_bootstrap
+from backtest.choose import (
+    best_single,
+    drop_small,
+    equal_weights,
+    max_sharpe,
+    random_search,
+    stateless,
+)
 from strategies import trend
 
 HERE = Path(__file__).resolve().parent
@@ -18,55 +24,54 @@ OUTPUT = HERE / "output"
 
 
 def single_speed(prices: pl.DataFrame, span: int) -> pl.DataFrame:
-    """Trend at one speed. Walk-forward passes the parameter as a keyword argument."""
+    """Trend at one speed."""
     return trend.forecast(prices, spans=(span,))
 
 
-def only_between(positions: pl.DataFrame, first: date, last: date) -> pl.DataFrame:
-    """Keeps positions between two dates, so strategies can be scored on the same days."""
-    inside = pl.col("AsOfDate").is_between(first, last)
-    return positions.with_columns(
-        pl.when(inside).then(pl.col(c)).alias(c) for c in instruments(positions)
-    )
+def favour_recent(train: pl.DataFrame) -> dict[str, float]:
+    """A custom choosing rule: weight each rule by its Sharpe over the last year, if positive."""
+    last_year = train.tail(252)
+    scores = (last_year.mean() / last_year.std()).row(0, named=True)
+    positive = {name: max(score, 0.0) for name, score in scores.items()}
+    total = sum(positive.values()) or 1.0
+    return {name: score / total for name, score in positive.items()}
 
 
 def main() -> None:
     OUTPUT.mkdir(exist_ok=True)
     bt = Backtest(PRICES)
 
-    # Use a wide grid: choosing the grid after seeing results brings hindsight back.
-    spans = [4, 8, 12, 16, 20, 24, 32, 48, 64]
-    walk = bt.walk_forward(single_speed, span=spans)
+    # Five rules: trend at five speeds. Use a wide range, because picking the range after
+    # seeing results brings hindsight back.
+    rules = grid(single_speed, span=[4, 8, 16, 32, 64])
 
-    # The honest score: every traded day used a span chosen from earlier data.
-    print(walk.result)
+    # Each choosing function is tested on the same blocks.
+    choosers = {
+        "equal weights": equal_weights(),
+        "best single": best_single(),
+        "max sharpe": max_sharpe(),
+        "random search": drop_small(random_search(candidates=500, keep=50), below=0.05),
+        "favour recent": stateless(favour_recent),
+    }
+    walks = {name: bt.walk_forward(rules, choose=c) for name, c in choosers.items()}
 
-    # What was chosen before each block. If this jumps around, the choice is mostly noise.
-    print(walk.choices)
+    for name, walk in walks.items():
+        print(f"{name:<15}{walk.result.adjusted_sharpe:6.2f}")
 
-    # Each span held fixed over the same days. The best row is what hindsight would pick.
-    print(walk.fixed.select("span", "adjusted_sharpe", "sharpe", "av_holding"))
+    # Each rule on its own over the same days. The best row is what hindsight would pick.
+    baseline = walks["equal weights"]
+    print(baseline.fixed.select("rule", "adjusted_sharpe", "av_holding"))
 
-    hindsight = walk.fixed["adjusted_sharpe"].max()
-    honest = walk.result.adjusted_sharpe
-    print(f"\nHindsight:    {hindsight:.2f}")
-    print(f"Walk-forward: {honest:.2f}")
-    print(f"Flattered by: {hindsight - honest:.2f}")
+    # The weights the random search chose before each block.
+    print(walks["random search"].choices)
 
-    # Compare with a strategy that never chooses a span, on the same days.
-    first, last = walk.choices["first_day"].min(), walk.choices["last_day"].max()
-    averaged = bt.run(trend.forecast).positions
-    same_days = bt.run_positions(only_between(averaged, first, last), name="trend")
-    print(f"Averaged spans, same days: {same_days.adjusted_sharpe:.2f}")
+    # How uncertain is the score? And does learning weights beat equal weights?
+    print(f"\nEqual weights: {bootstrap(baseline.result.returns)}")
+    for name in ("best single", "max sharpe", "random search", "favour recent"):
+        gap = paired_bootstrap(walks[name].result.returns, baseline.result.returns)
+        print(f"{name} minus equal weights: {gap}")
 
-    # The stitched strategy is a normal result, so every report works on it.
-    print(walk.result.by_year())
-
-    # Smaller blocks choose more often. A larger first_train gives more history to start.
-    frequent = bt.walk_forward(single_speed, span=spans, first_train=0.5, blocks=24)
-    print(f"\nHalf the data to start, 24 blocks: {frequent.result.adjusted_sharpe:.2f}")
-
-    walk.result.plot().savefig(OUTPUT / "walk_forward_dashboard.png")
+    walks["random search"].result.plot().savefig(OUTPUT / "walk_forward_dashboard.png")
     print(f"\nSaved the dashboard to {OUTPUT}")
 
 

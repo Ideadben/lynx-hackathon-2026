@@ -1,22 +1,11 @@
-# Library: backtest
-
-- [Types](#types)
-- [Backtest](#backtest-1)
-- [Result](#result)
-- [Comparison](#comparison)
-- [WalkForward](#walkforward)
-- [Scoring](#scoring)
-- [Pipeline](#pipeline)
-- [Leakage](#leakage)
-- [Trend](#trend)
-
-## Module backtest
+# Module backtest
 
 ```python
-from backtest import Backtest, Comparison, Result, WalkForward
+from backtest import Backtest, Comparison, Result, WalkForward, grid
 ```
 
-Test one trading strategy at a time. How it behaves is in `explanation.md`.
+Test one trading strategy at a time. The statistics in `stats.md` can also be imported from here. How it behaves is in
+`explanation.md`.
 
 ---
 
@@ -39,18 +28,6 @@ Period = Literal["dev", "holdout", "full"]
 ```
 
 The dates to score: the first 75%, the rest, or all of them.
-
-```python
-ScoringKind = Literal["pdf", "lynx"]
-```
-
-The PDF's formulas, or Lynx's `evaluation.py`.
-
-```python
-class LeakageError(AssertionError)
-```
-
-Positions depend on future data. From `backtest.leakage`.
 
 ## Backtest
 
@@ -141,22 +118,31 @@ def sweep(
 ```python
 def walk_forward(
     self,
-    forecast: Strategy,
+    rules: Mapping[str, Strategy],
     /,
     *,
+    choose: Choose | None = None,
     period: Period = "dev",
     first_train: float = 0.3,
     blocks: int = 12,
     check_leakage: bool = True,
-    **grid: Iterable[object],
 ) -> WalkForward
 ```
 
-`bt.walk_forward(f, span=[8, 16])` picks the best parameters from earlier days before each block, then trades them
-through that block.
+`bt.walk_forward(rules, choose=c)` asks `c` for weights from earlier days before each block, then trades the weighted
+rules through that block. `choose` defaults to `best_single()`.
 
-- **Raises** `LeakageError` if `f` uses future data.
-- **Raises** `ValueError` if the arguments are invalid, `period` is `"holdout"`, or there is too little history.
+- **Raises** `LeakageError` if a rule uses future data.
+- **Raises** `ValueError` if the arguments are invalid, `period` is `"holdout"`, `choose` returns unknown rules or
+  non-finite weights, or there are too few training days.
+
+```python
+def grid(forecast: Strategy, /, **values: Iterable[object]) -> dict[str, Strategy]
+```
+
+`grid(f, span=[8, 16])` returns one rule per combination of values, named like `"span=8"`.
+
+- **Raises** `ValueError` if no parameters are given.
 
 ## Result
 
@@ -224,111 +210,4 @@ class WalkForward:
     fixed: pl.DataFrame
 ```
 
-The stitched result, the parameters chosen per block, and each parameter held fixed over the same days.
-
-## Scoring
-
-From `backtest.scoring`.
-
-```python
-class Scoring:
-    kind: ScoringKind = "pdf"
-    delta: float = 0.0002
-    costs: float = -0.02
-```
-
-The scoring formula and its cost setting.
-
-- **Raises** `ValueError` if `kind` is unknown.
-
-```python
-def figures(self, positions: pl.DataFrame, prices: pl.DataFrame, names: Sequence[str]) -> dict[str, object]
-```
-
-`scoring.figures(positions, prices, names)` calculates the named key figures.
-
-```python
-def plot(self, positions: pl.DataFrame, prices: pl.DataFrame) -> Figure
-```
-
-`scoring.plot(positions, prices)` returns the dashboard.
-
-## Pipeline
-
-From `backtest.pipeline`.
-
-```python
-def load_data(source: Data) -> pl.DataFrame
-```
-
-`load_data(source)` reads a data source into a standard frame.
-
-- **Raises** `ValueError` if there is no single date column, or a column isn't numeric.
-- **Raises** `TypeError` if `source` isn't a path or frame.
-
-```python
-def instruments(frame: pl.DataFrame) -> list[str]
-```
-
-`instruments(frame)` returns the column names of `frame`, without `AsOfDate`.
-
-```python
-def vol_scale(
-    forecast: pl.DataFrame,
-    prices: pl.DataFrame,
-    vol_window: int = 100,
-    cap: float | None = 20.0,
-    normalize: bool = True,
-) -> pl.DataFrame
-```
-
-`vol_scale(forecast, prices)` scales and caps the forecast, then divides it by asset volatility (equation 2).
-
-- **Raises** `ValueError` if the forecast doesn't line up with the prices.
-
-```python
-def risk_scale(positions: pl.DataFrame, prices: pl.DataFrame, risk_window: int = 100) -> pl.DataFrame
-```
-
-`risk_scale(positions, prices)` divides positions by trailing strategy risk (equation 3).
-
-```python
-def to_positions(
-    forecast: pl.DataFrame,
-    prices: pl.DataFrame,
-    vol_window: int = 100,
-    risk_window: int = 100,
-    cap: float | None = 20.0,
-    normalize: bool = True,
-) -> pl.DataFrame
-```
-
-`to_positions(forecast, prices)` applies `vol_scale`, then `risk_scale`.
-
-- **Raises** `ValueError` if the forecast doesn't line up with the prices.
-
-## Leakage
-
-From `backtest.leakage`.
-
-```python
-def check_no_leakage(
-    positions_fn: Callable[..., pl.DataFrame],
-    prices: pl.DataFrame,
-    extras: pl.DataFrame | None = None,
-) -> None
-```
-
-`check_no_leakage(f, prices)` checks that past positions from `f` don't change when later data changes.
-
-- **Raises** `LeakageError` if they do.
-
-## Trend
-
-From `strategies.trend`.
-
-```python
-def forecast(prices: pl.DataFrame, spans: tuple[int, ...] = (8, 16, 32)) -> pl.DataFrame
-```
-
-`forecast(prices)` returns the average vote of moving average crossovers, from -1 to +1.
+The stitched result, the weights chosen per block, and each rule on its own over the same days.

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
-from backtest import Backtest
+from backtest import Backtest, grid
 from backtest.pipeline import instruments, risk_scale, to_positions
 from strategies import trend
 
@@ -55,7 +55,7 @@ def main() -> None:
     print(bt.sweep(single_speed, span=[8, 16, 32]))
 
     # Test choosing the span from the past, as live trading would have to.
-    walk = bt.walk_forward(single_speed, span=[8, 12, 16, 20, 32])
+    walk = bt.walk_forward(grid(single_speed, span=[8, 12, 16, 20, 32]))
     print(walk)
 
     # Put strategies side by side, and see how correlated they are.

@@ -12,6 +12,7 @@ import numpy as np
 import polars as pl
 from matplotlib.figure import Figure
 
+from backtest.choose import Choose, Weights, best_single
 from backtest.evaluation import DATE, POSITION_LAG
 from backtest.leakage import check_no_leakage
 from backtest.pipeline import (
@@ -144,9 +145,9 @@ class Comparison:
 class WalkForward:
     """The outcome of ``Backtest.walk_forward``.
 
-    ``result`` scores the stitched positions, so every traded day used a parameter chosen from
-    earlier data. ``choices`` has one row per block. ``fixed`` scores each parameter held
-    constant over the same traded days, so its best row is what hindsight would have picked.
+    ``result`` scores the stitched positions, so every traded day used weights chosen from
+    earlier data. ``choices`` has the weights per block. ``fixed`` scores each rule on its own over
+    the same traded days, so its best row is what hindsight would have picked.
     """
 
     result: Result
@@ -351,109 +352,109 @@ class Backtest:
 
     def walk_forward(
         self,
-        forecast: Strategy,
+        rules: Mapping[str, Strategy],
         /,
         *,
+        choose: Choose | None = None,
         period: Period = "dev",
         first_train: float = FIRST_TRAIN_FRACTION,
         blocks: int = WALK_FORWARD_BLOCKS,
         check_leakage: bool = True,
-        **grid: Iterable[object],
     ) -> WalkForward:
-        """Tests choosing parameters from the past, as live trading would have to.
+        """Tests choosing between rules using only the past, as live trading would have to.
 
-        Before each block, picks the parameters with the best Adjusted Sharpe on all earlier
-        days, then trades them through that block. Blocks are fractions of the rows in
-        ``period``, not calendar years, so this works on any length of history.
+        Before each block, ``choose`` sees each rule's daily net returns on all earlier days and
+        returns a weight per rule. The block then trades the weighted sum of the rules' positions.
+        Blocks are fractions of the rows in ``period``, so this works on any length of history.
 
         Args:
-            forecast: A forecast function that takes the parameters as keyword arguments.
+            rules: Forecast functions by name. ``grid`` makes them from parameter values.
+            choose: A choosing function from ``backtest.choose``. Defaults to ``best_single()``.
             period: ``"dev"`` or ``"full"``. ``"holdout"`` alone has no history to train on.
             first_train: The fraction of the period used only for training, at the start.
             blocks: The number of blocks the rest of the period is split into.
-            check_leakage: As in ``run``, for each parameter combination.
-            **grid: The values to try per parameter, like ``span=[8, 16, 32]``.
+            check_leakage: As in ``run``, for each rule.
 
         Returns:
-            ``result`` for the stitched positions, ``choices`` per block, and ``fixed`` for each
-            parameter held constant over the same days.
+            ``result`` for the stitched positions, the ``choices`` per block, and ``fixed`` for
+            each rule on its own over the same days.
 
         Raises:
-            ValueError: If the arguments are invalid, or no parameter has enough history.
+            ValueError: If the arguments are invalid, ``choose`` returns unknown rules or
+                non-finite weights, or there are too few training days.
         """
         if period not in ("dev", "full"):
             raise ValueError("walk_forward needs period 'dev' or 'full'.")
-        if not grid:
-            raise ValueError("Give at least one parameter, like span=[8, 16, 32].")
+        if not rules:
+            raise ValueError("Give at least one rule.")
         if not 0 < first_train < 1:
             raise ValueError("first_train must be between 0 and 1.")
-
         rows = _in_period(self.prices, self.prices, period).height
         edges = np.linspace(int(rows * first_train), rows, blocks + 1).astype(int)
         if blocks < 1 or (np.diff(edges) < 1).any():
             raise ValueError(f"Can't split {rows} days into {blocks} blocks.")
+        choose = best_single() if choose is None else choose
 
-        combos = [
-            dict(zip(grid, values, strict=True))
-            for values in itertools.product(*grid.values())
-        ]
-        positions = [
-            self.run(
-                partial(forecast, **combo), period="full", check_leakage=check_leakage
+        names = list(rules)
+        positions = {
+            name: self.run(
+                rule, period="full", check_leakage=check_leakage, name=name
             ).positions
-            for combo in combos
-        ]
+            for name, rule in rules.items()
+        }
+        returns = self._rule_returns(positions)
 
-        pieces = [_blank(positions[0]).head(int(edges[0]))]
+        pieces = [_blank(positions[names[0]]).head(int(edges[0]))]
         choices = []
+        state = None
         for start, end in zip(edges[:-1].tolist(), edges[1:].tolist(), strict=True):
-            scores = [self._train_score(frame, start) for frame in positions]
-            best = int(np.argmax(scores))
-            if not np.isfinite(scores[best]):
+            train = returns.filter(pl.col(DATE) < self.prices[DATE][start])
+            train = train.drop(DATE).drop_nulls()
+            if train.height < MIN_TRAIN_DAYS:
                 raise ValueError(
-                    f"Not enough history before row {start}: each parameter needs "
-                    f"{MIN_TRAIN_DAYS} days after warm-up. Use a larger first_train."
+                    f"Only {train.height} training days before {self.prices[DATE][start]} "
+                    f"where every rule has a return; {MIN_TRAIN_DAYS} are needed. "
+                    "Use a larger first_train."
                 )
-            pieces.append(positions[best].slice(start, end - start))
+            weights, state = choose(train, state)
+            weights = _checked_weights(weights, names)
+            block = {
+                name: frame.slice(start, end - start)
+                for name, frame in positions.items()
+            }
+            pieces.append(_weighted_sum(block, weights))
             choices.append(
                 {
                     "first_day": self.prices[DATE][start],
                     "last_day": self.prices[DATE][end - 1],
-                    **combos[best],
-                    "train_adjusted_sharpe": scores[best],
+                    **weights,
                 }
             )
-        pieces.append(_blank(positions[0]).slice(rows))
+        pieces.append(_blank(positions[names[0]]).slice(rows))
 
-        name = f"walk_forward {_name(forecast)}"
-        stitched = pl.concat(pieces)
         result = self.run_positions(
-            stitched, period=period, check_leakage=False, name=name
+            pl.concat(pieces), period=period, check_leakage=False, name="walk_forward"
         )
         fixed = [
-            combo
+            {"rule": name}
             | self.run_positions(
                 _only_rows(frame, int(edges[0]), rows),
                 period=period,
                 check_leakage=False,
             ).figures
-            for combo, frame in zip(combos, positions, strict=True)
+            for name, frame in positions.items()
         ]
         return WalkForward(result, pl.DataFrame(choices), pl.DataFrame(fixed))
 
-    def _train_score(self, positions: pl.DataFrame, start: int) -> float:
-        """Adjusted Sharpe from returns known before ``start``. -inf with too little history."""
-        # A position earns its return two days later, so the last ones have no known return yet.
-        known = positions.head(start - POSITION_LAG)
-        columns = instruments(positions)
-        active = known.filter(pl.any_horizontal(pl.col(columns).is_not_null())).height
-        if active < MIN_TRAIN_DAYS:
-            return float("-inf")
-        names = ["adjusted_sharpe"]
-        score = float(
-            cast(float, self.scoring.figures(known, self.prices, names)[names[0]])
-        )
-        return score if np.isfinite(score) else float("-inf")
+    def _rule_returns(self, positions: dict[str, pl.DataFrame]) -> pl.DataFrame:
+        """Each rule's daily net returns, one column per rule."""
+        columns = {}
+        for name, frame in positions.items():
+            figures = self.scoring.figures(frame, self.prices, ["returns"])
+            series = cast(pl.DataFrame, figures["returns"])
+            columns[DATE] = series[DATE]
+            columns[name] = series["returns"]
+        return pl.DataFrame(columns)
 
 
 def dev_end(prices: pl.DataFrame) -> date:
@@ -487,6 +488,53 @@ def _correlations(results: dict[str, Result]) -> pl.DataFrame:
     assert joined is not None
     return (
         joined.drop(DATE).corr().insert_column(0, pl.Series("strategy", list(results)))
+    )
+
+
+def grid(forecast: Strategy, /, **values: Iterable[object]) -> dict[str, Strategy]:
+    """One rule per combination of parameter values, named like ``"span=8"``.
+
+    Raises:
+        ValueError: If no parameters are given.
+    """
+    if not values:
+        raise ValueError("Give at least one parameter, like span=[8, 16, 32].")
+    rules = {}
+    for combo in itertools.product(*values.values()):
+        parameters = dict(zip(values, combo, strict=True))
+        name = ", ".join(f"{key}={value}" for key, value in parameters.items())
+        rules[name] = partial(forecast, **parameters)
+    return rules
+
+
+def _checked_weights(weights: Weights, names: list[str]) -> Weights:
+    unknown = set(weights) - set(names)
+    if unknown:
+        raise ValueError(
+            f"choose returned weights for unknown rules: {sorted(unknown)}"
+        )
+    full = {name: float(weights.get(name, 0.0)) for name in names}
+    if not all(np.isfinite(list(full.values()))):
+        raise ValueError(f"choose returned weights that aren't finite: {full}")
+    return full
+
+
+def _weighted_sum(positions: dict[str, pl.DataFrame], weights: Weights) -> pl.DataFrame:
+    """Sum of weight times positions. A day is null only if every weighted rule is null there."""
+    used = [name for name, weight in weights.items() if weight != 0]
+    first = next(iter(positions.values()))
+    if not used:
+        return _blank(first)
+    columns = instruments(first)
+    terms = {c: [positions[n][c] * weights[n] for n in used] for c in columns}
+    return first.select(
+        DATE,
+        *(
+            pl.when(pl.any_horizontal(t.is_not_null() for t in terms[c]))
+            .then(pl.sum_horizontal(terms[c]))
+            .alias(c)
+            for c in columns
+        ),
     )
 
 
