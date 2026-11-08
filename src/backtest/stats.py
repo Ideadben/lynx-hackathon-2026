@@ -12,6 +12,10 @@ import polars as pl
 from arch.bootstrap import StationaryBootstrap, optimal_block_length
 
 DAYS_PER_YEAR = 252
+# Keeps about two weeks of days together, so runs of quiet and wild days survive resampling. The
+# estimate from the returns alone is about 1 day here, because daily returns barely predict each
+# other, but squared returns do.
+DEFAULT_BLOCK = 10.0
 
 Returns = np.ndarray | pl.Series | pl.DataFrame
 """Daily returns: an array, a polars series, or a frame with a ``returns`` column."""
@@ -109,7 +113,7 @@ def bootstrap(
     returns: Returns,
     statistic: Statistic = adjusted_sharpe,
     *,
-    block: float | None = None,
+    block: float | None = DEFAULT_BLOCK,
     samples: int = 10_000,
     seed: int = 0,
 ) -> Bootstrap:
@@ -121,8 +125,8 @@ def bootstrap(
     Args:
         returns: Daily returns: an array, a polars series, or a frame with a ``returns`` column.
         statistic: Turns an array of returns into a number. Defaults to ``adjusted_sharpe``.
-        block: Average block length in days. By default it is estimated from how related the
-            daily returns are (Politis and White).
+        block: Average block length in days, 10 by default. ``None`` estimates it from how
+            related the daily returns are (Politis and White), which ignores volatility clustering.
         samples: Number of resampled histories.
         seed: Random seed. The same seed gives the same result.
 
@@ -132,7 +136,7 @@ def bootstrap(
 
     Example:
         >>> print(bootstrap(result.returns))
-        0.72, 95% interval [0.24, 1.16], P(<= 0) = 0.1%, average block 1 days
+        0.72, 95% interval [0.23, 1.18], P(<= 0) = 0.3%, average block 10 days
     """
     values = _values(returns)
     block = _block(values) if block is None else block
@@ -147,7 +151,7 @@ def paired_bootstrap(
     second: Returns,
     statistic: Statistic = adjusted_sharpe,
     *,
-    block: float | None = None,
+    block: float | None = DEFAULT_BLOCK,
     samples: int = 10_000,
     seed: int = 0,
 ) -> Bootstrap:
@@ -161,7 +165,8 @@ def paired_bootstrap(
         second: Daily returns of the second strategy. Frames with an ``AsOfDate`` column are
             matched on date, keeping the days both have. Arrays must have the same length.
         statistic: Turns an array of returns into a number. Defaults to ``adjusted_sharpe``.
-        block: Average block length in days. By default it is estimated from the difference.
+        block: Average block length in days, 10 by default. ``None`` estimates it from the
+            difference of the returns.
         samples: Number of resampled histories.
         seed: Random seed. The same seed gives the same result.
 

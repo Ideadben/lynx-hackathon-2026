@@ -200,8 +200,11 @@ print(paired_bootstrap(walk.result.returns, baseline.result.returns))
 ```
 
 - It uses a stationary bootstrap from the `arch` package: blocks of random length, so runs of related days stay
-  together. The average block length is estimated from the returns, unless `block` is given. It depends on how
-  related the daily returns are, not on how long positions are held.
+  together. The average block length is 10 days by default. Daily returns barely predict each other, but quiet
+  and wild days come in runs (volatility clustering), and those runs shape skew and kurtosis, so about two weeks
+  of days stay together. `block=None` estimates it from the returns instead (Politis and White), which gives
+  about 1 day here because it ignores volatility clustering. Much longer blocks leave fewer independent pieces,
+  which makes the interval itself noisier.
 - `p_at_most_zero` is the share of resampled values at or below 0. For `paired_bootstrap`, it's how often the first
   strategy didn't beat the second.
 - Use `paired_bootstrap` to compare strategies. Two separate intervals overlapping says little, because the

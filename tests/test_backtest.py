@@ -890,7 +890,8 @@ def test_bootstrap_interval_contains_the_estimate(prices):
     assert result.estimate == pytest.approx(adjusted_sharpe(returns))
     assert result.low < result.estimate < result.high
     assert 0 <= result.p_at_most_zero < 0.5
-    assert result.block >= 1
+    assert result.block == 10
+    assert bootstrap(returns, samples=200, block=None).block >= 1
     assert result.draws.shape == (500,)
     assert "95% interval" in str(result)
     assert bootstrap(returns, samples=500, seed=1).low != result.low

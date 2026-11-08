@@ -27,7 +27,7 @@ def bootstrap(
     returns: Returns,
     statistic: Statistic = adjusted_sharpe,
     *,
-    block: float | None = None,
+    block: float | None = 10.0,
     samples: int = 10_000,
     seed: int = 0,
 ) -> Bootstrap
@@ -41,7 +41,7 @@ def paired_bootstrap(
     second: Returns,
     statistic: Statistic = adjusted_sharpe,
     *,
-    block: float | None = None,
+    block: float | None = 10.0,
     samples: int = 10_000,
     seed: int = 0,
 ) -> Bootstrap
