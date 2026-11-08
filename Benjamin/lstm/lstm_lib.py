@@ -17,9 +17,9 @@ from numpy.lib.stride_tricks import sliding_window_view
 from torch import nn
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
-from evaluation import calc_key_figures
+from backtest.evaluation import calc_key_figures
 
 DATE_COL = "AsOfDate"
 VOL_WINDOW = 100
@@ -44,7 +44,7 @@ WF_RETRAIN_EVERY = 260
 # Data and features
 # ----------------------------------------------------------------------------------------------
 def load_prices() -> pl.DataFrame:
-    return pl.read_csv(ROOT / "example_prices.csv", try_parse_dates=True).rename({"dates": DATE_COL})
+    return pl.read_csv(ROOT / "prices" / "example_prices.csv", try_parse_dates=True).rename({"dates": DATE_COL})
 
 
 def price_matrix(prices: pl.DataFrame) -> np.ndarray:

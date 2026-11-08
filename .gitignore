@@ -184,3 +184,9 @@ cython_debug/
 CLAUDE.md
 uv.lock
 .vscode
+
+# Output of the examples
+src/examples/output/
+
+# Personal todo lists
+todos/
