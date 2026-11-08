@@ -13,6 +13,7 @@ to `src/examples/output/`, which Git ignores.
 | `data_example.py` | Loading csv, polars or pandas data, and using extra series. |
 | `leakage_example.py` | Strategies that use future data by mistake, and the error they raise. |
 | `blend_example.py` | Combining strategies into final positions, and saving them. |
+| `portfolio_example.py` | Combining strategies with `Portfolio`, comparing weighting methods, and saving the submission. |
 | `walk_forward_example.py` | Choosing between rules from past data only, with several choosing functions. |
 | `example.py` | A longer tour of most features. |
 

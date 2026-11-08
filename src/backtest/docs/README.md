@@ -12,3 +12,4 @@ working scripts are in `src/examples/`.
 | [`backtest.pipeline`](pipeline.md) | Loading data, and forecast to positions |
 | [`backtest.leakage`](leakage.md) | `check_no_leakage`, `LeakageError` |
 | [`strategies.trend`](trend.md) | The trend strategy |
+| [`portfolio`](portfolio.md) | `Portfolio`: combining strategies into the submission |

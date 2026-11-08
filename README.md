@@ -42,6 +42,21 @@ test parameter choices. Run them with `uv run python src/examples/example.py`. T
 `Backtest` handles volatility scaling, capping and portfolio risk scaling, and raises `LeakageError` if
 the strategy uses future data. Use `period="holdout"` sparingly. Run the tests with `uv run pytest`.
 
+## Combining strategies
+
+`Portfolio` blends the team's forecast functions into the positions we submit. Give it fixed weights, or a choosing
+function that picks weights from past returns every quarter:
+
+```python
+from portfolio import Portfolio, risk_parity
+
+portfolio = Portfolio({"trend": trend.forecast, "carry": carry}, choose=risk_parity())
+result = bt.run_positions(portfolio, name="portfolio")   # Leakage-checked like any strategy.
+portfolio.weights(bt.prices)                              # The weights over time.
+```
+
+See `src/examples/portfolio_example.py` and `src/backtest/docs/portfolio.md`.
+
 ## Positions format
 
 `src/backtest/evaluation.py` takes Polars frames in wide format: an `AsOfDate` column plus one column per
