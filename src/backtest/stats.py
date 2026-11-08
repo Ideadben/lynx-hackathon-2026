@@ -14,11 +14,26 @@ from arch.bootstrap import StationaryBootstrap, optimal_block_length
 DAYS_PER_YEAR = 252
 
 Returns = np.ndarray | pl.Series | pl.DataFrame
+"""Daily returns: an array, a polars series, or a frame with a ``returns`` column."""
 Statistic = Callable[[np.ndarray], float]
+"""Turns an array of daily returns into a number, like ``adjusted_sharpe``."""
 
 
 def sharpe(returns: Returns, days_per_year: int = DAYS_PER_YEAR) -> float | np.ndarray:
-    """Equation (4): yearly Sharpe ratio. NaN if there are fewer than 2 returns or no variation."""
+    """Equation (4): the yearly Sharpe ratio of daily returns.
+
+    Args:
+        returns: Daily returns: an array, a polars series, or a frame with a ``returns`` column.
+            A 2D array is scored column by column. NaN days are dropped from 1D input.
+        days_per_year: Trading days per year. 252 for the PDF, 260 for ``evaluation.py``.
+
+    Returns:
+        The Sharpe ratio, or one per column for a 2D array. NaN with fewer than 2 returns or no
+        variation.
+
+    Raises:
+        ValueError: If a 2D array contains NaN.
+    """
     values = _values(returns)
     count = values.shape[0]
     if count < 2:
@@ -35,8 +50,20 @@ def adjusted_sharpe(
 ) -> float | np.ndarray:
     """Equation (5): Sharpe ratio penalised for negative skew and excess kurtosis.
 
-    Skewness and excess kurtosis are bias-corrected, as in ``evaluation.py``. NaN if there are
-    fewer than 4 returns or no variation.
+    Skewness and excess kurtosis are bias-corrected, as in ``evaluation.py``. This is the
+    competition score.
+
+    Args:
+        returns: Daily returns: an array, a polars series, or a frame with a ``returns`` column.
+            A 2D array is scored column by column. NaN days are dropped from 1D input.
+        days_per_year: Trading days per year. 252 for the PDF, 260 for ``evaluation.py``.
+
+    Returns:
+        The Adjusted Sharpe ratio, or one per column for a 2D array. NaN with fewer than 4
+        returns or no variation.
+
+    Raises:
+        ValueError: If a 2D array contains NaN.
     """
     values = _values(returns)
     count = values.shape[0]
@@ -59,11 +86,17 @@ class Bootstrap:
     """A statistic, its 95% interval, and how often it came out at or below zero."""
 
     estimate: float
+    """The statistic on the original returns."""
     low: float
+    """The 2.5th percentile of the resampled statistic."""
     high: float
+    """The 97.5th percentile of the resampled statistic."""
     p_at_most_zero: float
+    """Share of resampled values at or below 0."""
     block: float
+    """Average block length used, in days."""
     draws: np.ndarray
+    """Every resampled value of the statistic."""
 
     def __str__(self) -> str:
         return (
@@ -80,10 +113,26 @@ def bootstrap(
     samples: int = 10_000,
     seed: int = 0,
 ) -> Bootstrap:
-    """Resamples daily returns in blocks, to show how uncertain ``statistic`` is.
+    """Resamples daily returns in blocks, to show how uncertain a statistic is.
 
-    Uses a stationary bootstrap: blocks of random length, ``block`` days on average, so that
-    runs of related days stay together. By default the block length is estimated from the data.
+    Uses a stationary bootstrap: blocks of random length, ``block`` days on average, so runs of
+    related days stay together. Run it on out-of-sample returns, like ``walk.result.returns``.
+
+    Args:
+        returns: Daily returns: an array, a polars series, or a frame with a ``returns`` column.
+        statistic: Turns an array of returns into a number. Defaults to ``adjusted_sharpe``.
+        block: Average block length in days. By default it is estimated from how related the
+            daily returns are (Politis and White).
+        samples: Number of resampled histories.
+        seed: Random seed. The same seed gives the same result.
+
+    Returns:
+        The statistic, its 95% interval, the share of draws at or below 0, the block length, and
+        every draw. ``print`` it for a one-line summary.
+
+    Example:
+        >>> print(bootstrap(result.returns))
+        0.72, 95% interval [0.24, 1.16], P(<= 0) = 0.1%, average block 1 days
     """
     values = _values(returns)
     block = _block(values) if block is None else block
@@ -104,8 +153,24 @@ def paired_bootstrap(
 ) -> Bootstrap:
     """Bootstraps ``statistic(first) - statistic(second)`` on the same resampled days.
 
-    Frames with an ``AsOfDate`` column are matched on date, keeping the days both have. Use it to
-    test whether one strategy beats another: ``p_at_most_zero`` is how often it didn't.
+    Use it to test whether one strategy beats another. Overlapping separate intervals say little,
+    because the strategies share the same days.
+
+    Args:
+        first: Daily returns of the first strategy.
+        second: Daily returns of the second strategy. Frames with an ``AsOfDate`` column are
+            matched on date, keeping the days both have. Arrays must have the same length.
+        statistic: Turns an array of returns into a number. Defaults to ``adjusted_sharpe``.
+        block: Average block length in days. By default it is estimated from the difference.
+        samples: Number of resampled histories.
+        seed: Random seed. The same seed gives the same result.
+
+    Returns:
+        The difference, its 95% interval, and ``p_at_most_zero``: how often ``first`` didn't beat
+        ``second``.
+
+    Raises:
+        ValueError: If arrays differ in length.
     """
     a, b = _paired_values(first, second)
     block = _block(a - b) if block is None else block

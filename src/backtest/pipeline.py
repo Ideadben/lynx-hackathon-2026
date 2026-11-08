@@ -14,6 +14,7 @@ from backtest.evaluation import DATE, POSITION_LAG
 Data = (
     str | Path | pl.DataFrame | Any
 )  # Any covers pandas frames, which we don't import here.
+"""A data source: a csv path, or a polars or pandas frame."""
 DATE_NAMES = (
     "asofdate",
     "dates",
@@ -26,10 +27,22 @@ FORECAST_CAP = 20.0
 
 
 def load_data(source: Data) -> pl.DataFrame:
-    """Reads a csv path, or a polars or pandas frame, into the standard frame format.
+    """Reads a data source into the standard frame.
 
-    The result has an ``AsOfDate`` column plus float columns, sorted by date. A missing value repeats
-    the last known value, which uses no future data.
+    The result has an ``AsOfDate`` column of dates, plus float columns, sorted by date. A missing
+    value repeats the last known value, which uses no future data. Values missing at the very
+    start stay null.
+
+    Args:
+        source: A csv path, or a polars or pandas frame. Needs exactly one date column, called
+            ``AsOfDate``, ``dates`` or ``date`` (any case), or a pandas date index.
+
+    Returns:
+        The frame, with every column except ``AsOfDate`` as floats.
+
+    Raises:
+        ValueError: If there is no single date column, or a column isn't numeric.
+        TypeError: If ``source`` isn't a path or frame.
     """
     if isinstance(source, (str, Path)):
         # Scan every row: an asset that starts late would otherwise be read as text.
@@ -63,6 +76,14 @@ def load_data(source: Data) -> pl.DataFrame:
 
 
 def instruments(frame: pl.DataFrame) -> list[str]:
+    """The column names of a frame, without ``AsOfDate``.
+
+    Args:
+        frame: Any frame in the standard format.
+
+    Returns:
+        The asset (or series) names, in column order.
+    """
     return [column for column in frame.columns if column != DATE]
 
 
@@ -73,12 +94,24 @@ def vol_scale(
     cap: float | None = FORECAST_CAP,
     normalize: bool = True,
 ) -> pl.DataFrame:
-    """Equation (2): divides the forecast by asset volatility, so assets carry equal risk.
+    """Equation (2): scales and caps a forecast, then divides by asset volatility.
 
-    With ``normalize``, each instrument is first scaled to an average absolute forecast of 10 and
-    capped at ``cap`` (``None`` for no cap). The average covers the data so far, not the full sample,
-    because a full-sample average would use future data. Without ``normalize``, the forecast is
-    used as it is, and ``cap`` has no effect.
+    With ``normalize``, each asset is first scaled to an average absolute forecast of 10 over the
+    data so far, then capped at ``cap``. Dividing by volatility gives each asset about equal risk.
+
+    Args:
+        forecast: ``AsOfDate`` plus one column per asset, one row per price date.
+        prices: ``AsOfDate`` plus one price column per asset.
+        vol_window: Days of squared price changes used for volatility.
+        cap: Largest absolute forecast after scaling. ``None`` for no cap.
+        normalize: Scale to an average size of 10. If False, the forecast is used as it is and
+            ``cap`` has no effect.
+
+    Returns:
+        Positions before strategy risk scaling. Null where there is no forecast or volatility.
+
+    Raises:
+        ValueError: If the forecast doesn't line up with the prices.
     """
     columns = instruments(prices)
     check_frame(forecast, prices)
@@ -103,9 +136,18 @@ def vol_scale(
 def risk_scale(
     positions: pl.DataFrame, prices: pl.DataFrame, risk_window: int = RISK_WINDOW
 ) -> pl.DataFrame:
-    """Equation (3): divides positions by trailing strategy risk, so total risk stays steady.
+    """Equation (3): divides positions by the strategy's trailing risk.
 
-    Strategy returns use the same two-day lag as the scoring, so row T only uses returns up to T.
+    Risk is the standard deviation of the strategy's daily returns over ``risk_window`` days, with
+    the two-day lag. This keeps total risk at about 1 per day.
+
+    Args:
+        positions: ``AsOfDate`` plus one column per asset, one row per price date.
+        prices: ``AsOfDate`` plus one price column per asset.
+        risk_window: Days of strategy returns used for risk.
+
+    Returns:
+        The scaled positions. Null until the window has filled.
     """
     columns = instruments(positions)
     returns = prices.select(pl.col(columns).diff())
@@ -129,7 +171,24 @@ def to_positions(
     cap: float | None = FORECAST_CAP,
     normalize: bool = True,
 ) -> pl.DataFrame:
-    """The full pipeline: forecast to final positions."""
+    """The full pipeline: forecast to final positions.
+
+    Runs ``vol_scale``, then ``risk_scale``. ``Backtest.run`` calls this for you.
+
+    Args:
+        forecast: ``AsOfDate`` plus one column per asset, one row per price date.
+        prices: ``AsOfDate`` plus one price column per asset.
+        vol_window: Days used for asset volatility.
+        risk_window: Days used for strategy risk.
+        cap: Largest absolute forecast after scaling. ``None`` for no cap.
+        normalize: Scale each asset to an average absolute forecast of 10.
+
+    Returns:
+        Final positions, ready to score or blend.
+
+    Raises:
+        ValueError: If the forecast doesn't line up with the prices.
+    """
     scaled = vol_scale(forecast, prices, vol_window, cap, normalize)
     return risk_scale(scaled, prices, risk_window)
 
@@ -158,7 +217,16 @@ def _finite(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def check_frame(frame: pl.DataFrame, prices: pl.DataFrame) -> None:
-    """Checks that a forecast or positions frame lines up with the prices."""
+    """Checks that a forecast or positions frame lines up with the prices.
+
+    Args:
+        frame: The frame to check.
+        prices: The prices it should line up with.
+
+    Raises:
+        ValueError: If ``frame`` has no ``AsOfDate`` column, misses an asset, or its dates don't
+            match the price dates one to one.
+    """
     if DATE not in frame.columns:
         raise ValueError(f"The frame needs an {DATE} column.")
     missing = set(instruments(prices)) - set(frame.columns)

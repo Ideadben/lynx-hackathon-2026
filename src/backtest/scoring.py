@@ -38,6 +38,7 @@ PDF_DAYS_PER_YEAR = 252
 LYNX_COSTS = -0.02
 
 ScoringKind = Literal["pdf", "lynx"]
+"""``"pdf"`` for the PDF's formulas, ``"lynx"`` for Lynx's ``evaluation.py``."""
 
 
 @dataclass(frozen=True)
@@ -45,8 +46,11 @@ class Scoring:
     """Which scoring to use, and its cost setting."""
 
     kind: ScoringKind = "pdf"
+    """``"pdf"`` for the PDF's formulas, ``"lynx"`` for ``evaluation.py``."""
     delta: float = PDF_DELTA
+    """Flat cost per unit traded, for ``"pdf"``."""
     costs: float = LYNX_COSTS
+    """Cost per unit traded in daily standard deviations, for ``"lynx"``. Negative."""
 
     def __post_init__(self) -> None:
         if self.kind not in ("pdf", "lynx"):
@@ -54,6 +58,7 @@ class Scoring:
 
     @property
     def annualization(self) -> float:
+        """The square root of the trading days per year: 252 for ``"pdf"``, 260 for ``"lynx"``."""
         return (
             float(np.sqrt(PDF_DAYS_PER_YEAR)) if self.kind == "pdf" else ANNUALIZATION
         )
@@ -61,7 +66,17 @@ class Scoring:
     def figures(
         self, positions: pl.DataFrame, prices: pl.DataFrame, names: Sequence[str]
     ) -> dict[str, object]:
-        """The key figures in ``names``, in the same format as ``calc_key_figures``."""
+        """Calculates key figures for positions.
+
+        Args:
+            positions: ``AsOfDate`` plus one column per asset. Only these dates are scored.
+            prices: ``AsOfDate`` plus one price column per asset, usually for all dates.
+            names: Which figures to return, from ``evaluation.ALL_KEY_FIGURES``.
+
+        Returns:
+            The figures by name, in the same format as ``evaluation.calc_key_figures``: floats,
+            dicts per instrument, or frames for time series.
+        """
         if self.kind == "lynx":
             return calc_key_figures(
                 positions, prices, costs=self.costs, key_figures=names
@@ -70,7 +85,15 @@ class Scoring:
         return {name: figures[name] for name in names}
 
     def plot(self, positions: pl.DataFrame, prices: pl.DataFrame) -> Figure:
-        """The four-panel dashboard."""
+        """The four-panel dashboard.
+
+        Args:
+            positions: ``AsOfDate`` plus one column per asset. Only these dates are shown.
+            prices: ``AsOfDate`` plus one price column per asset.
+
+        Returns:
+            A matplotlib ``Figure``.
+        """
         if self.kind == "lynx":
             return plot_key_figures(positions, prices, costs=self.costs)
 

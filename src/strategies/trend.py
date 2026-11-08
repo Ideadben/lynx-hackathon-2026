@@ -15,7 +15,19 @@ SLOW_MULTIPLE = 4
 
 
 def forecast(prices: pl.DataFrame, spans: tuple[int, ...] = SPANS) -> pl.DataFrame:
-    """The average vote of the moving average crossovers, per asset and day."""
+    """The average vote of moving average crossovers, per asset and day.
+
+    For each span, a recent average price is compared with one four times slower. If the recent
+    one is higher, that speed votes +1, otherwise -1. Days stay null until every speed has warmed
+    up.
+
+    Args:
+        prices: ``AsOfDate`` plus one price column per asset.
+        spans: The speeds, roughly how many days each fast average looks back.
+
+    Returns:
+        The forecast, from -1 (every speed short) to +1 (every speed long).
+    """
     assets = [column for column in prices.columns if column != "AsOfDate"]
     # Added up rather than averaged with a null-skipping mean, so a day stays null until every
     # speed has warmed up.

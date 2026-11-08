@@ -43,7 +43,9 @@ KEY_FIGURES = [
 ]
 
 Period = Literal["dev", "holdout", "full"]
+"""Which dates to score: the first 75% (``"dev"``), the rest (``"holdout"``), or all (``"full"``)."""
 Strategy = Callable[..., pl.DataFrame]
+"""A forecast function: ``forecast(prices)`` or ``forecast(prices, extras)`` returns direction and size per date and asset."""
 
 
 @dataclass(frozen=True)
@@ -55,11 +57,57 @@ class Result:
     """
 
     name: str
+    """The strategy's name, from its function or the ``name`` argument."""
     period: Period
+    """Which dates the figures cover: ``"dev"``, ``"holdout"`` or ``"full"``."""
     figures: dict[str, float]
+    """Every key figure by name. Each is also an attribute, like ``result.sharpe``."""
     positions: pl.DataFrame
+    """Final positions for all dates, not just ``period``."""
     prices: pl.DataFrame
+    """The prices the strategy ran on."""
     scoring: Scoring
+    """How the positions were scored."""
+
+    @property
+    def adjusted_sharpe(self) -> float:
+        """The competition score: yearly Sharpe after costs, penalised for negative skew and fat tails."""
+        return self.figures["adjusted_sharpe"]
+
+    @property
+    def sharpe(self) -> float:
+        """Yearly Sharpe ratio after costs."""
+        return self.figures["sharpe"]
+
+    @property
+    def sharpe_ex_slippage(self) -> float:
+        """Yearly Sharpe ratio before costs."""
+        return self.figures["sharpe_ex_slippage"]
+
+    @property
+    def sharpe_1d_lag(self) -> float:
+        """Sharpe with positions one day later. A big drop means a short-lived signal."""
+        return self.figures["sharpe_1d_lag"]
+
+    @property
+    def skewness(self) -> float:
+        """Skew of daily returns. Negative skew lowers the adjusted Sharpe."""
+        return self.figures["skewness"]
+
+    @property
+    def kurtosis(self) -> float:
+        """Kurtosis of daily returns. Normal returns give 3. Fat tails lower the adjusted Sharpe."""
+        return self.figures["kurtosis"]
+
+    @property
+    def av_holding(self) -> float:
+        """Average number of days a position is held."""
+        return self.figures["av_holding"]
+
+    @property
+    def position_bias(self) -> float:
+        """Long/short tilt, from -1 (short only) to 1 (long only)."""
+        return self.figures["position_bias"]
 
     def __getattr__(self, name: str) -> float:
         if name in KEY_FIGURES:
@@ -70,12 +118,20 @@ class Result:
 
     @property
     def returns(self) -> pl.DataFrame:
-        """Daily net returns for this period: ``AsOfDate`` and ``returns``."""
+        """Daily net returns for this period: ``AsOfDate`` and ``returns``.
+
+        Warm-up days are left out. Pass it to ``bootstrap`` or ``paired_bootstrap``.
+        """
         figures = self._figures("returns")
         return cast(pl.DataFrame, figures["returns"]).drop_nulls()
 
     def by_year(self) -> pl.DataFrame:
-        """Sharpe after costs, total return and number of scored days, per calendar year."""
+        """Results per calendar year in this period.
+
+        Returns:
+            One row per year: ``year``, ``days`` scored, ``total_return`` and ``sharpe`` after costs.
+            The first and last years can be partial, so check ``days``.
+        """
         returns = pl.col("returns")
         return self.returns.group_by(
             pl.col(DATE).dt.year().alias("year"), maintain_order=True
@@ -86,7 +142,12 @@ class Result:
         )
 
     def by_instrument(self) -> pl.DataFrame:
-        """Sharpe before costs, holding period and position bias, per instrument."""
+        """Results per asset in this period.
+
+        Returns:
+            One row per asset: ``instrument``, ``sharpe_ex_slippage`` (before costs, the same as the
+            dashboard), ``av_holding`` and ``position_bias``. NaN for an asset with no data here.
+        """
         figures = self._figures(
             "sharpe_per_instrument",
             "av_holding_per_instrument",
@@ -105,11 +166,23 @@ class Result:
         )
 
     def to_csv(self, path: str | Path) -> None:
-        """Saves positions for all dates, whatever the period. Warm-up nulls become empty cells."""
+        """Saves the positions for all dates to a csv, whatever the period was.
+
+        The submission needs the full run. Warm-up rows have empty cells, the same as the Lynx
+        Quickstart notebook.
+
+        Args:
+            path: Where to write the csv.
+        """
         self.positions.write_csv(path)
 
     def plot(self) -> Figure:
-        """The four-panel dashboard for this period."""
+        """The four-panel dashboard for this period.
+
+        Returns:
+            A matplotlib ``Figure``. In a notebook it shows when it's the last line of a cell.
+            In a script, save it with ``result.plot().savefig(path)``.
+        """
         return self.scoring.plot(self._scored(), self.prices)
 
     def __str__(self) -> str:
@@ -133,8 +206,11 @@ class Comparison:
     """
 
     results: dict[str, Result]
+    """Each strategy's full ``Result``, by name."""
     figures: pl.DataFrame
+    """One row per strategy, with every key figure."""
     correlations: pl.DataFrame
+    """Correlations of daily net returns, on the dates every strategy shares."""
 
     def __str__(self) -> str:
         with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_hide_dataframe_shape=True):
@@ -151,8 +227,11 @@ class WalkForward:
     """
 
     result: Result
+    """The stitched positions, scored. The honest number."""
     choices: pl.DataFrame
+    """The weights chosen before each block, with its first and last day."""
     fixed: pl.DataFrame
+    """Each rule on its own over the same days. The best row is what hindsight would pick."""
 
     def __str__(self) -> str:
         with pl.Config(tbl_rows=-1, tbl_cols=-1, tbl_hide_dataframe_shape=True):
@@ -458,7 +537,14 @@ class Backtest:
 
 
 def dev_end(prices: pl.DataFrame) -> date:
-    """The date of the last development position. Its return is earned two days later."""
+    """The date of the last development position. Its return is earned two days later.
+
+    Args:
+        prices: The prices of the backtest.
+
+    Returns:
+        The last date scored when ``period="dev"``.
+    """
     return prices[DATE][int(prices.height * DEV_FRACTION) - 1 - POSITION_LAG]
 
 
@@ -492,10 +578,21 @@ def _correlations(results: dict[str, Result]) -> pl.DataFrame:
 
 
 def grid(forecast: Strategy, /, **values: Iterable[object]) -> dict[str, Strategy]:
-    """One rule per combination of parameter values, named like ``"span=8"``.
+    """One rule per combination of parameter values, for ``Backtest.walk_forward``.
+
+    Args:
+        forecast: A forecast function that takes the parameters as keyword arguments.
+        **values: The values to try per parameter, like ``span=[8, 16, 32]``.
+
+    Returns:
+        The rules, named like ``"span=8"``, or ``"fast=8, slow=32"`` for several parameters.
 
     Raises:
         ValueError: If no parameters are given.
+
+    Example:
+        >>> rules = grid(single_speed, span=[4, 8, 16, 32, 64])
+        >>> walk = bt.walk_forward(rules, choose=max_sharpe())
     """
     if not values:
         raise ValueError("Give at least one parameter, like span=[8, 16, 32].")
