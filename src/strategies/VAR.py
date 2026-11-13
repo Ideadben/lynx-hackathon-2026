@@ -21,6 +21,7 @@ class VARmodel:
         self.num_vars = num_vars
         self.max_lag = max_lag
         self.predictors = [] 
+        self.log_Sigma = [0,]*max_lag
         for lag in range(1, max_lag + 1):
             self.predictors.append(np.ones((lag+1,num_vars)))  # Initialize with ones
     
@@ -33,6 +34,17 @@ class VARmodel:
             residuals = lambda predicting_matrix: (self.training_data.predictor_sweep(np.reshape(predicting_matrix[:lag* self.num_vars],(lag,self.num_vars)), np.reshape(predicting_matrix[-self.num_vars:],(1,self.num_vars))) - self.training_data.validation).flatten()
             result = least_squares(residuals, self.predictors[lag-1].flatten())
             self.predictors[lag-1] = np.reshape(result.x,(lag+1, self.num_vars))
+            sigma = result.residuals.reshape(-1, self.num_vars).T @ result.residuals.reshape(-1, self.num_vars) / len(results.residuals// self.num_vars)
+            sign, logdet = np.linalg.slogdet(sigma)
+            self.log_Sigma[lag-1] = logdet
+
+    def optimal_lag(self):
+        # Use BIC to determine the optimal lag
+        logS = np.array(self.log_Sigma)
+        T = self.training_data.validation.shape[0]
+        BIC = logS + np.log(T) * (np.arange(1, self.max_lag + 1) * self.num_vars**2) / T
+        print("optimal lag:", np.argmin(BIC)+1)
+
 
 
 
