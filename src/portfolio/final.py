@@ -6,14 +6,17 @@
 Weights (each strategy goes through the risk pipeline on its own, then the blend is
 risk-scaled once more, so a weight is a share of risk):
 
-    10%  tikhonov_garch      Tikhonov lag filter (alpha = 46) with GARCH vol timing as risk management
-    30%  slow_trend          \
-    30%  long_stocks_bonds    > the triple strategy, listed part by part so each is vol-scaled once
-    30%  macro               /
+    10%  var_ridge           ridge VAR on 37 asset and macro series x 5 lookbacks (strategies.var_ridge)
+     5%  tikhonov_garch      Tikhonov lag filter (alpha = 46) with GARCH vol timing as risk management
+    20%  slow_trend          \
+    40%  long_stocks_bonds    > the triple strategy, listed part by part so each is vol-scaled once
+    25%  macro               /
 
-The 10% Tikhonov share is the one with the best adjusted Sharpe over dev + validation (1995 - Oct
-2014) in a sweep from 0% to 60% in 5% steps, the triple keeping equal thirds of the rest
-(YANNICK/portfolio_dashboard.py). The test block was scored once, afterwards.
+The weights were fitted jointly on dev + validation (1995 - Oct 2014) only: every mix of the five
+in 10% steps (1001 mixes) was scored by adjusted Sharpe. The surface is flat (the top 15 lie within
+0.02), so instead of the single best mix the weights are the average of the top 50, rounded to
+5%. Dev + validation adjusted Sharpe 1.22, against 1.18 for the earlier 10 / 9 / 27 / 27 / 27. The
+test block was scored once, afterwards.
 
 The whole blend runs through the backtester's leakage test before anything is written. The saved
 file has ``AsOfDate`` plus one column per instrument, for every date; warm-up rows are empty.
@@ -29,19 +32,26 @@ import polars as pl
 from backtest import Backtest
 from backtest.stats import adjusted_sharpe, sharpe
 from portfolio.blend import Portfolio
-from strategies import tikhonov, triple
+from strategies import tikhonov, triple, var_ridge
 
 ROOT = Path(__file__).resolve().parents[2]
 PRICES = ROOT / "prices" / "close_prices_insample.csv"
 MACRO = ROOT / "prices" / "macro_data_insample.csv"
 
 STRATEGIES = {
+    "var_ridge": var_ridge.forecast,
     "tikhonov_garch": tikhonov.forecast_garch,
     "slow_trend": triple.slow_trend,
     "long_stocks_bonds": triple.long_stocks_bonds,
     "macro": triple.macro,
 }
-WEIGHTS = {"tikhonov_garch": 0.1, "slow_trend": 0.3, "long_stocks_bonds": 0.3, "macro": 0.3}
+WEIGHTS = {
+    "var_ridge": 0.10,
+    "tikhonov_garch": 0.05,
+    "slow_trend": 0.20,
+    "long_stocks_bonds": 0.40,
+    "macro": 0.25,
+}
 
 # Report windows, as fractions of the dates: the 75 / 15 / 10 dev / validation / test split.
 WINDOWS = {"dev": (0.0, 0.75), "validation": (0.75, 0.90), "test": (0.90, 1.0)}
@@ -67,7 +77,7 @@ def _windows(returns: pl.DataFrame, dates: pl.Series) -> dict[str, float]:
 
 def report(bt: Backtest, final) -> None:
     """Adjusted and plain Sharpe per window for the blend, the triple, and each strategy."""
-    rows = {"FINAL (40 / 20 / 20 / 20)": final}
+    rows = {"FINAL (" + " / ".join(f"{w:.0%}" for w in WEIGHTS.values()) + ")": final}
     rows["triple alone"] = bt.run_positions(triple.portfolio(), period="full", check_leakage=False, name="triple")
     for name, f in STRATEGIES.items():
         rows[name] = bt.run(f, period="full", check_leakage=False, name=name)
