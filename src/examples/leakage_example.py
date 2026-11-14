@@ -12,7 +12,7 @@ from backtest.leakage import LeakageError
 from backtest.pipeline import instruments
 
 HERE = Path(__file__).resolve().parent
-PRICES = HERE.parents[1] / "prices" / "example_prices.csv"
+PRICES = HERE.parents[1] / "prices" / "prices_old_example" / "example_prices.csv"
 
 
 def peeks_ahead(prices: pl.DataFrame) -> pl.DataFrame:

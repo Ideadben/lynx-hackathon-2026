@@ -11,7 +11,7 @@ from backtest import Backtest
 from backtest.pipeline import instruments, load_data
 
 HERE = Path(__file__).resolve().parent
-PRICES = HERE.parents[1] / "prices" / "example_prices.csv"
+PRICES = HERE.parents[1] / "prices" / "prices_old_example" / "example_prices.csv"
 
 
 def trend_when_calm(prices: pl.DataFrame, extras: pl.DataFrame) -> pl.DataFrame:

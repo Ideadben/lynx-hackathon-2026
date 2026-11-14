@@ -35,7 +35,7 @@ from backtest.runner import dev_end
 from backtest.scoring import Scoring
 from strategies import trend
 
-PRICES_CSV = Path(__file__).resolve().parents[1] / "prices" / "example_prices.csv"
+PRICES_CSV = Path(__file__).resolve().parents[1] / "prices" / "prices_old_example" / "example_prices.csv"
 
 
 @pytest.fixture(scope="module")

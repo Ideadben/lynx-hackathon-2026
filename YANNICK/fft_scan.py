@@ -24,7 +24,7 @@ from backtest import Backtest
 from strategies import trend
 
 ROOT = Path(__file__).resolve().parents[1]
-PRICES = ROOT / "prices" / "example_prices.csv"
+from data import PRICES  # noqa: E402
 rng = np.random.default_rng(0)
 
 

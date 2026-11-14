@@ -14,7 +14,7 @@ from backtest.scoring import Scoring
 from portfolio import Portfolio, inverse_vol, risk_parity, shrunk_max_sharpe
 from strategies import trend
 
-PRICES_CSV = Path(__file__).resolve().parents[1] / "prices" / "example_prices.csv"
+PRICES_CSV = Path(__file__).resolve().parents[1] / "prices" / "prices_old_example" / "example_prices.csv"
 STRATEGIES = {
     "fast": partial(trend.forecast, spans=(8,)),
     "mid": partial(trend.forecast, spans=(32,)),

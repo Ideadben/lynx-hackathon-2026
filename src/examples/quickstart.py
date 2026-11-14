@@ -10,7 +10,7 @@ import polars as pl
 from backtest import Backtest
 
 HERE = Path(__file__).resolve().parent
-PRICES = HERE.parents[1] / "prices" / "example_prices.csv"
+PRICES = HERE.parents[1] / "prices" / "prices_old_example" / "example_prices.csv"
 
 
 def moving_average(prices: pl.DataFrame) -> pl.DataFrame:

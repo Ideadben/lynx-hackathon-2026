@@ -11,7 +11,7 @@ from backtest import Backtest, adjusted_sharpe, bootstrap, sharpe
 from strategies import trend
 
 HERE = Path(__file__).resolve().parent
-PRICES = HERE.parents[1] / "prices" / "example_prices.csv"
+PRICES = HERE.parents[1] / "prices" / "prices_old_example" / "example_prices.csv"
 
 
 def main() -> None:

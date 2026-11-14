@@ -28,7 +28,7 @@ from backtest.stats import paired_bootstrap
 from strategies import trend
 
 ROOT = Path(__file__).resolve().parents[1]
-PRICES = ROOT / "prices" / "example_prices.csv"
+from data import PRICES  # noqa: E402
 HALF_LIVES = np.array([20, 40, 80, 160, 320, 640])
 PHIS = 0.5 ** (1 / HALF_LIVES)
 QS = np.array([1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3])

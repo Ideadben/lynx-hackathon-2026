@@ -22,7 +22,7 @@ from backtest.stats import paired_bootstrap
 from strategies import trend
 
 ROOT = Path(__file__).resolve().parents[1]
-PRICES = ROOT / "prices" / "example_prices.csv"
+from data import PRICES  # noqa: E402
 
 
 def build(prices: pl.DataFrame) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:

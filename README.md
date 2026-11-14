@@ -57,6 +57,22 @@ portfolio.weights(bt.prices)                              # The weights over tim
 
 See `src/examples/portfolio_example.py` and `src/backtest/docs/portfolio.md`.
 
+## The final submission
+
+`src/portfolio/final.py` builds the portfolio we submit and writes its positions:
+
+```
+uv run python -m portfolio.final                                   # in-sample data -> positions.csv
+uv run python -m portfolio.final --prices p.csv --macro m.csv --out positions.csv
+```
+
+It blends four strategies by share of risk: 40% `tikhonov.forecast_garch` (a Tikhonov-regularised
+linear filter of the last 250 daily returns, with GARCH vol timing as risk management) and 20% each
+for the three parts of `strategies/triple.py` (slow trend, long stocks and bonds, the macro rule).
+The whole blend passes the leakage test before the file is written, and the command prints each
+strategy's Sharpe on the 75 / 15 / 10 dev / validation / test windows. Change the weights in
+`final.WEIGHTS`. The GARCH code is `strategies/garch.py`, copied from Søren's research file.
+
 ## Positions format
 
 `src/backtest/evaluation.py` takes Polars frames in wide format: an `AsOfDate` column plus one column per

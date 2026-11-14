@@ -13,7 +13,8 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-prices = pd.read_csv(ROOT / "prices" / "example_prices.csv", index_col=0, parse_dates=True)
+from data import PRICES  # noqa: E402
+prices = pd.read_csv(PRICES, index_col=0, parse_dates=True)
 dev = prices.iloc[: int(len(prices) * 0.75)]
 assets = list(dev.columns)
 

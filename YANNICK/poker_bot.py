@@ -30,7 +30,7 @@ from portfolio import Portfolio  # noqa: E402
 from strategies import trend  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-PRICES = ROOT / "prices" / "example_prices.csv"
+from data import PRICES  # noqa: E402
 FEATURES = ["trend", "shock", "season"]
 
 

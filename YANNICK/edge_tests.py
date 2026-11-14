@@ -18,7 +18,7 @@ from backtest import Backtest
 from strategies import trend
 
 ROOT = Path(__file__).resolve().parents[1]
-PRICES = ROOT / "prices" / "example_prices.csv"
+from data import PRICES  # noqa: E402
 
 
 def _pd(prices: pl.DataFrame) -> pd.DataFrame:
