@@ -16,8 +16,10 @@ strength whatever the size of the data.
 
 Walk-forward: every January the weights are refitted on all earlier years. The last ``H + 2``
 days before the refit are dropped, because their targets reach into the year being traded. The
-first ``MIN_YEARS`` years only train. Defaults are the setting chosen in the Tikhonov lab (block
-validation on 2003-2010, YANNICK/tikhonov_features.py): L = 250, H = 5, smooth G, alpha = 1000.
+first ``MIN_YEARS`` years only train. Defaults: L = 250, H = 5, second-order (smooth) G from the
+Tikhonov lab (YANNICK/tikhonov_features.py); alpha = 46, chosen on the validation block among the
+full alpha sweep (YANNICK/tikhonov_lagweight.py), since the dev blocks could not tell alphas apart.
+alpha = 46 gives about 20 effective parameters; the earlier default alpha = 1000 gave about 7.
 
 ``forecast_garch`` is the same forecast times the GARCH vol-timing multiplier from
 ``strategies.garch``: exposure is cut when GARCH expects more turbulence than usual. The learned
@@ -32,7 +34,7 @@ from strategies import garch
 
 L = 250
 H = 5
-ALPHA = 1000.0
+ALPHA = 46.0
 MIN_YEARS = 5
 VOL_WINDOW = 100
 DATE = "AsOfDate"

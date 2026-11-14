@@ -66,8 +66,8 @@ uv run python -m portfolio.final                                   # in-sample d
 uv run python -m portfolio.final --prices p.csv --macro m.csv --out positions.csv
 ```
 
-It blends four strategies by share of risk: 40% `tikhonov.forecast_garch` (a Tikhonov-regularised
-linear filter of the last 250 daily returns, with GARCH vol timing as risk management) and 20% each
+It blends four strategies by share of risk: 10% `tikhonov.forecast_garch` (a Tikhonov-regularised
+linear filter of the last 250 daily returns, with GARCH vol timing as risk management) and 30% each
 for the three parts of `strategies/triple.py` (slow trend, long stocks and bonds, the macro rule).
 The whole blend passes the leakage test before the file is written, and the command prints each
 strategy's Sharpe on the 75 / 15 / 10 dev / validation / test windows. Change the weights in

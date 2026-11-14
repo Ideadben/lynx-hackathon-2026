@@ -6,10 +6,14 @@
 Weights (each strategy goes through the risk pipeline on its own, then the blend is
 risk-scaled once more, so a weight is a share of risk):
 
-    40%  tikhonov_garch      Tikhonov lag filter with GARCH vol timing as risk management
-    20%  slow_trend          \
-    20%  long_stocks_bonds    > the triple strategy, listed part by part so each is vol-scaled once
-    20%  macro               /
+    10%  tikhonov_garch      Tikhonov lag filter (alpha = 46) with GARCH vol timing as risk management
+    30%  slow_trend          \
+    30%  long_stocks_bonds    > the triple strategy, listed part by part so each is vol-scaled once
+    30%  macro               /
+
+The 10% Tikhonov share is the one with the best adjusted Sharpe over dev + validation (1995 - Oct
+2014) in a sweep from 0% to 60% in 5% steps, the triple keeping equal thirds of the rest
+(YANNICK/portfolio_dashboard.py). The test block was scored once, afterwards.
 
 The whole blend runs through the backtester's leakage test before anything is written. The saved
 file has ``AsOfDate`` plus one column per instrument, for every date; warm-up rows are empty.
@@ -37,7 +41,7 @@ STRATEGIES = {
     "long_stocks_bonds": triple.long_stocks_bonds,
     "macro": triple.macro,
 }
-WEIGHTS = {"tikhonov_garch": 0.4, "slow_trend": 0.2, "long_stocks_bonds": 0.2, "macro": 0.2}
+WEIGHTS = {"tikhonov_garch": 0.1, "slow_trend": 0.3, "long_stocks_bonds": 0.3, "macro": 0.3}
 
 # Report windows, as fractions of the dates: the 75 / 15 / 10 dev / validation / test split.
 WINDOWS = {"dev": (0.0, 0.75), "validation": (0.75, 0.90), "test": (0.90, 1.0)}
